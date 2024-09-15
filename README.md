@@ -17,7 +17,7 @@ The design choices of the initial idea of the software is as follows:
 ```mermaid
 classDiagram 
         direction BT
-    class ComProtocol {
+    class IComProtocol {
         <<Interface>>
         +nodes: Node[]
         +connections: Connection[]
@@ -31,9 +31,9 @@ classDiagram
         +receiveData(node: Node, data: string)
     }
     %% %%%%%
-    ComProtocol <|-- Flooding
-    ComProtocol <|-- Routing
-    ComProtocol <|-- Waterfall
+    IComProtocol <|-- Flooding
+    IComProtocol <|-- Routing
+    IComProtocol <|-- Waterfall
     %% %%%%%
 
     class Node {
@@ -47,11 +47,11 @@ classDiagram
         +broadcastData(data: string)
     }
     %% %%%%%
-    Node <-- ComProtocol
+    Node <-- IComProtocol
     %% %%%%%
 
     class MeshNetwork {
-        +protocol : ComProtocol
+        +protocol : IComProtocol
     }
     
     class Connection {
@@ -60,7 +60,7 @@ classDiagram
         +SNR : float?
     }
     %% %%%%%
-    Connection <--  ComProtocol
+    Connection <--  IComProtocol
     Connection <--  Node
     %% %%%%%
 
@@ -76,7 +76,7 @@ classDiagram
     }
 
     class FullyConnected {
-        +protocol : ComProtocol
+        +protocol : IComProtocol
     }
 
 MeshNetwork *--  Node
