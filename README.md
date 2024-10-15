@@ -1,4 +1,5 @@
-Radio Mesh Network
+# Radio Mesh Network
+This is the bachelor project of blok 1-2 24/25. The bachelor project tries to understand the communication between radio modules and see if it is possible to dynamically identify each other, just like a mesh network. The thesis can be read on (overleaf)[https://www.overleaf.com/read/wghnydtwgbdh#60a554]. The final version will be available end january in this repository. 
 the focus would be on the network protocol
 ### Prerequisites for the design
 The design choices of the initial idea of the software is as follows:

@@ -1,3 +1,9 @@
+# Node.py developed by Phillip Lundin 13 sep 2024
+# This is a program to simulate how a radio meshnetwork
+# would work in practice. Abstractions have been made to
+# justify the underlying logic on an actual implementation.
+# You can read more on https://github.com/Nidocq/RadioMeshNetwork/blob/main/README.md
+
 import abc
 import socket
 import random
@@ -5,6 +11,8 @@ import time
 import datetime
 import os
 import threading
+from typing import List, Tuple#, Self
+
 
 class bcolors:
     HEADER = '\033[95m'
@@ -17,11 +25,11 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# Node.py developed by Phillip Lundin 13 sep 2024
 class Node:
     iden : str
-    position : str
-    connections : list
+    position : str = "earth"
+
+    connections : List[Tuple[str, int]] = None  
     serverIp : str
     serverPort : int
 
@@ -29,23 +37,24 @@ class Node:
     # just a signal. If this is set to 10, this will search for other
     # nodes that are either in the range -10 ports away or +10 ports away
     portStrength : int
-    serverThread = None
 
-    sourceIp : str
-    sourcePort : int
+    # indicate that we use server threads to communicate with other nodes
+    serverThread = None
 
     enableDiagnostics : bool
 
-    def __init__(self, sourceIp, sourcePort, enableDiagnostics = True):
+    def __init__(self, serverIp, serverPort, portStrength = 3, enableDiagnostics = True):
         self.iden = "".join([chr(random.randint(65, 90)) for _ in range(16)])
-        self.sourceIp = sourceIp
-        self.sourcePort = sourcePort
+        self.serverIp = serverIp
+        self.serverPort = serverPort
         self.enableDiagnostics = enableDiagnostics
+        self.portStrength = portStrength
 
+        # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
+        if (self.connections is None):
+            self.connections = []
 
-
-
-        self.runServerThread(sourceIp, sourcePort)
+        self.runServerThread(serverIp, serverPort)
 
 
     def runServerThread(self, ip : str, port : int):
@@ -64,11 +73,44 @@ class Node:
             self.serverThread = serverThread
             self.serverThread.start()
 
-    def sendData(self, data : bytes, destIp, destPort):
+    def reconNetwork(self, sockTimeout : int, destIp = ''):
+        """
+            Will recon for other nodes in the vicinity for its self.portStrength self.connection
+            this will mean that self.portStrength of 10, will search for every port from -10 to +10
+            POSTCONDITION: will populate the self.connections with the Nodes in the vincinity.
+            @param
+                sockTimeout : int   -   The amount of time it should take for each port to timeout
+        """
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.settimeout(sockTimeout)
+        data = b'isAwake'
+        for portScan in range(self.serverPort - self.portStrength, self.serverPort + self.portStrength):
+            if (portScan == self.serverPort):
+                # If the port is the same as the node own port, skip
+                continue
+
+            print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {portScan} for nodes")}')
+            client_socket.sendto(data, (destIp, portScan))
+            try:
+                recData, server = client_socket.recvfrom(1024)
+                print(f'{self.diagnositcPrepend("reconNetwork() client_socket.sendto(data, (destIp, portScan))",
+                      f"server : {server} added!")}:')
+                self.connections.append(server)
+            except socket.timeout:
+                print(f'{self.diagnositcPrepend("reconNetwork()", f"No node found on {portScan}. Continuing")}')
+                continue
+
+    def nodeStatus(self):
+        """
+            prints the information about this node.
+        """
+        print(f'{self.diagnositcPrepend("NodeStatus()",f"Identification : {self.iden}\naddress : '{self.serverIp}':{self.serverPort}\nconnections : {self.connections}\nposition {self.position}, portStrength {self.portStrength}")}')
+
+    def sendData(self, data : bytes, destIp : str, destPort : int):
         """
             Sends data in bytes to a destination ip and port
             @param
-                data : bytes    -   Bytes of data that will gets sent
+                data : bytes    -   Bytes of data that will get sent
                 destIp : str    -   The destination IP
                 destPort : int  -   The destination Port
         """
@@ -93,8 +135,6 @@ class Node:
 
         pass
 
-    def recieveData(self, data : str, receiver): # : Node
-        pass
 
     def diagnositcPrepend(self, caller : str, customMessage : str):
         """
@@ -105,19 +145,12 @@ class Node:
                                 could be a specific function call or an event
         """
         if self.enableDiagnostics is True or self.enableDiagnostics is not None:
-            return f"\n{bcolors.BOLD}{bcolors.OKGREEN}{caller}{bcolors.WARNING} {customMessage} {bcolors.ENDC}{bcolors.BOLD}{str(datetime.datetime.now())} -c:{self.iden}{bcolors.ENDC}\n\t"
+            return f"\n{bcolors.BOLD}{bcolors.OKGREEN}{caller}{bcolors.WARNING} {customMessage} {bcolors.ENDC}{bcolors.BOLD}{str(datetime.datetime.now())} -c:{self.iden} '{self.serverIp}':{self.serverPort}{bcolors.ENDC}\n\t"
         else:
             return ""
 
-    def transmitData(self, data : str):
-        pass
 
-    def connectToNetwork(self):
-        pass
-
-
-
-    def startUDPServer(self, ip : str, port : int):
+    def startUDPServer(self, ip : str, port : int, listenForPing = True):
         """
             Start a UDP server that listens on the specified ip and port
             POSTCONDITION : Will populate the self.server(ip&port) of the listening ip and port
@@ -129,19 +162,30 @@ class Node:
         # TODO Implement some fallback behaviour, or some try catch
         print(f"{self.diagnositcPrepend("startUDPServer()", "")} starting UDP connection server {ip}:{port} as thread from id : {self.iden}")
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        print(f'{self.diagnositcPrepend("startUDPServer()", "")} Binding to ip : {ip}, on port {port}')
+        print(f'{self.diagnositcPrepend("startUDPServer()", "")} Binding to \'{ip}\':{port}')
         server_socket.bind((ip, port))
 
         self.serverIp = ip
         self.serverPort = port
+        self.receiveData(server_socket)
 
+    def receiveData(self, sock, buffer = 1024):
+        """
+            listens for incomming traffic forever.
+            @param
+                sock : socket   -   the socket which the server listens to (is bound to this node's address)
+                buffer : int    -   The buffer that the receiving message can hold
+        """
         while True:
-            message, address = server_socket.recvfrom(1024)
+            message, address = sock.recvfrom(buffer)
             message = message.upper()
-            print(f'{self.diagnositcPrepend("StartUDPServer()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
-            server_socket.sendto(message, address)
+            print(f'{self.diagnositcPrepend("receiveData()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
+
+            #TODO could have a function that would be called if an message is recieved?
+            sock.sendto(message, address)
 
     def stopUDPServer(self):
+        #TODO Try catch to gracefully stop the server 
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Stopping server...")
         self.serverThread.join()
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
@@ -155,16 +199,12 @@ class Node:
 #-------------------------------------------------- 
 
 
-
-
-# Connection.py developed by Phillip Lundin 13 sep 2024
 class Connection:
    source : Node
    destination : Node
    SNR : float
 
 
-# IComProtocol developed by Phillip Lundin 15 sep 2024
 class IComProtocol(metaclass=abc.ABCMeta):
     nodes : list[Node]
     connections : list[Connection]
@@ -174,7 +214,6 @@ class IComProtocol(metaclass=abc.ABCMeta):
         pass
 
 
-# Flooding.py developed by Phillip Lundin 15 sep 2024
 class Flooding(IComProtocol):
     def __init__(self, nodes : list[Node]):
         pass
@@ -182,11 +221,9 @@ class Flooding(IComProtocol):
     def addNode(self, node : Node):
         self.nodes.append(node)
 
-# Routing.py developed by Phillip Lundin 15 sep 2024
 class Routing(IComProtocol):
     pass
 
-# MeshNetwork.py developed by Phillip Lundin 13 sep 2024
 class MeshNetwork:
     network : IComProtocol
     def __init__(self, NetworkType):
@@ -196,12 +233,23 @@ class MeshNetwork:
 if __name__ == '__main__':
     #https://stackoverflow.com/questions/2084508/clear-the-terminal-in-python
     os.system('cls' if os.name == 'nt' else 'clear')
-    n = Node('', 65000)
-    m = Node('', 65001)
+    network = [Node('', 65000), Node('', 65001), Node('', 65004), Node('', 65099)]
 
-    n.sendData(b'Hello from me', '', 65001)
-    #time.sleep(1)
-    #n.stopUDPServer()
+    send_node = Node('', 65003, 2) # will send a message to 65000 through (65001 or 65004)
+    network.append(send_node)
+    send_node.sendData(b'Hello 65001 from {},format(send_node.source_port)', '', 65001)
+    #network[0].connections.append(('', 650044))
+
+    # start
+    for node in network:
+        node.reconNetwork(1)
+
+    # end
+    for node in network:
+        node.nodeStatus()
+
+    #n.sendData(b'Hello from me', '', 65001)
+    time.sleep(1)
 
 
 
