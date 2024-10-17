@@ -9,7 +9,6 @@ import socket
 import random
 import time
 import datetime
-import os
 import threading
 from typing import List, Tuple#, Self
 
@@ -29,7 +28,7 @@ class Node:
     iden : str
     position : str = "earth"
 
-    connections : List[Tuple[str, int]] = None  
+    connections : List[Tuple[str, int]] = None
     serverIp : str
     serverPort : int
 
@@ -73,7 +72,7 @@ class Node:
             self.serverThread = serverThread
             self.serverThread.start()
 
-    def reconNetwork(self, sockTimeout : int = 1, destIp = ''):
+    def reconNetwork(self, sockTimeout : int = 1, destIp = '', runAsThread=True):
         """
             Will recon for other nodes in the vicinity for its self.portStrength self.connection
             this will mean that self.portStrength of 10, will search for every port from -10 to +10
@@ -81,26 +80,41 @@ class Node:
             @param
                 sockTimeout : int   -   The amount of time it should take for each port to timeout
         """
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        client_socket.settimeout(sockTimeout)
-        data = b'ping'
-
+        #if runAsThread:
+        #else:
+        reconThreads : list[threading.Thread] = []
         # +1 because we skip our own port and we don't want our own port to count towards the strength
         for portScan in range(self.serverPort - self.portStrength, self.serverPort + self.portStrength+1):
             if (portScan == self.serverPort):
                 # If the port is the same as the node own port, skip
                 continue
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            client_socket.settimeout(sockTimeout)
+            data = b'ping'
 
-            print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {portScan} for nodes")}')
-            client_socket.sendto(data, (destIp, portScan))
-            try:
-                recData, server = client_socket.recvfrom(1024)
-                if (recData == b'pong'):
-                    print(f'{self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!")}:')
-                    self.connections.append(server)
-            except socket.timeout:
-                #print(f'{self.diagnositcPrepend("reconNetwork()", f"No node found on {portScan}. Continuing")}')
-                continue
+            print(f'{self.diagnositcPrepend("reconNetwork()", "Starting recon as a thread")}')
+
+            t = threading.Thread(group=None, target=self.tryPing, args=(data, destIp, portScan, client_socket))
+            reconThreads.append(t)
+
+        for t in reconThreads:
+            t.start()
+
+        for t in reconThreads:
+            t.join()
+
+    def tryPing(self, data, destIp, destPort, sock):
+        print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {destPort} for nodes")}')
+        sock.sendto(data, (destIp, destPort))
+        try:
+            recData, server = sock.recvfrom(1024)
+            if (recData == b'pong'):
+                print(f'{self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!")}:')
+                self.connections.append(server)
+        except socket.timeout:
+            pass
+            #print(f'{self.diagnositcPrepend("reconNetwork()", f"No node found on {destPort}. Continuing")}')
+            #continue
 
     def nodeStatus(self):
         """
@@ -108,7 +122,7 @@ class Node:
         """
         print(f'{self.diagnositcPrepend("NodeStatus()",f"Identification : {self.iden}\naddress : '{self.serverIp}':{self.serverPort}\nconnections : {self.connections}\nposition {self.position}, portStrength {self.portStrength}")}')
 
-    def sendData(self, data : bytes, destIp : str, destPort : int):
+    def sendData(self, data : bytes, destIp : str, destPort : int, requireACK=False):
         """
             Sends data in bytes to a destination ip and port
             @param
@@ -116,14 +130,16 @@ class Node:
                 destIp : str    -   The destination IP
                 destPort : int  -   The destination Port
         """
-        for pings in range(30):
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if requireACK:
             client_socket.settimeout(1.0)
 
-            start = time.time()
-            client_socket.sendto(data, (destIp, destPort))
-            print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
-                  "Sending message")}:{data!r} {pings}')
+        start = time.time()
+        client_socket.sendto(data, (destIp, destPort))
+        print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
+              "Sending message")}:{data!r}')
+
+        if requireACK:
             try:
                 recData, server = client_socket.recvfrom(1024)
                 end = time.time()
@@ -131,11 +147,9 @@ class Node:
                 # f strings produce sanitised strings if bytes are input
                 # Therefore !r makes it 'bytes' spcifically
                 print(f'{self.diagnositcPrepend("sendData()",
-                      f"received message from {server}")}:{recData!r} {pings} {elapsed}')
+                      f"received message from {server}")}:{recData!r} {elapsed}')
             except socket.timeout:
                 print('REQUEST TIMED OUT')
-
-        pass
 
 
     def diagnositcPrepend(self, caller : str, customMessage : str):
@@ -169,11 +183,11 @@ class Node:
 
         self.serverIp = ip
         self.serverPort = port
-        self.receiveData(server_socket)
+        self.listenForRequests(server_socket)
 
 
 
-    def receiveData(self, sock, buffer = 1024):
+    def listenForRequests(self, sock, buffer = 1024):
         """
             listens for incomming traffic forever.
             @param
@@ -182,7 +196,7 @@ class Node:
         """
         while True:
             message, address = sock.recvfrom(buffer)
-            print(f'{self.diagnositcPrepend("receiveData()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
+            print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
             self.processRequest(sock, message, address)
 
     def stopUDPServer(self):
@@ -192,10 +206,19 @@ class Node:
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
 
     def processRequest(self, sock, message, address):
-
+        """
+            processes a request from another node
+            @param
+                sock : socket   -   The open socket which the request came from
+                message : bytes -   The bytes that were tranferred to this node and needs to be processed
+                address : tuple(str, int) The address the message came from
+        """
         match message:
             case b'ping':
                 print(f'{self.diagnositcPrepend("processRequest()", f"processing request {message!r}, responding back with pong...")}')
+                sock.sendto(b'pong', address)
+            case b'ACK':
+                print(f'{self.diagnositcPrepend("processRequest()", f"processing request {message!r}, responding back with ACK...")}')
                 sock.sendto(b'pong', address)
             case _:
                 print(f'{self.diagnositcPrepend("processRequest()", f"COULD NOT PROCESS REQUEST {message!r}")} : from {address}')
@@ -236,33 +259,35 @@ class MeshNetwork:
 
 
 if __name__ == '__main__':
+    pass
+    #print("HULLOMJHEJ")
     #https://stackoverflow.com/questions/2084508/clear-the-terminal-in-python
-    os.system('cls' if os.name == 'nt' else 'clear')
-    network = [Node('', 65000), Node('', 65001), Node('', 65004), Node('', 65099)]
+    #os.system('cls' if os.name == 'nt' else 'clear')
+    #network = [Node('', 65000), Node('', 65001), Node('', 65004), Node('', 65099)]
 
     #send_node = Node('', 65003, 2) # will send a message to 65000 through (65001 or 65004)
     #network.append(send_node)
     #send_node.sendData(b'Hello 65001 from {},format(send_node.source_port)', '', 65001)
     #network[0].connections.append(('', 650044))
 
-    Thr = []
+    #Thr = []
     # start
-    for node in network:
-        print("spawning thread")
-        Thr.append(threading.Thread(group=None, target=node.reconNetwork, daemon=True))
+    #for node in network:
+    #    #print("spawning thread")
+    #    #Thr.append(threading.Thread(group=None, target=node.reconNetwork))
+    #    node.reconNetwork()
 
-    for t in Thr:
-        t.start()
+    ##for t in Thr:
+    ##    t.start()
 
-    for t in Thr:
-        t.join()
+    ##for t in Thr:
+    ##    t.join()
 
-    # end
-    for node in network:
-        node.nodeStatus()
+    ## end
+    #for node in network:
+    #    node.nodeStatus()
 
-    #n.sendData(b'Hello from me', '', 65001)
-    time.sleep(1)
+    ##n.sendData(b'Hello from me', '', 65001)
 
 
 
