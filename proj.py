@@ -39,6 +39,7 @@ class Node:
 
     # indicate that we use server threads to communicate with other nodes
     serverThread = None
+    stopServerThread : bool= None
 
     enableDiagnostics : bool
 
@@ -52,6 +53,9 @@ class Node:
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
         if (self.connections is None):
             self.connections = []
+
+        if (self.stopServerThread is None):
+            self.stopServerThread = False
 
         self.runServerThread(serverIp, serverPort)
 
@@ -76,12 +80,11 @@ class Node:
         """
             Will recon for other nodes in the vicinity for its self.portStrength self.connection
             this will mean that self.portStrength of 10, will search for every port from -10 to +10
+            every port from the port strength will have its own thread, to speed up the network discovery.
             POSTCONDITION: will populate the self.connections with the Nodes in the vincinity.
             @param
                 sockTimeout : int   -   The amount of time it should take for each port to timeout
         """
-        #if runAsThread:
-        #else:
         reconThreads : list[threading.Thread] = []
         # +1 because we skip our own port and we don't want our own port to count towards the strength
         for portScan in range(self.serverPort - self.portStrength, self.serverPort + self.portStrength+1):
@@ -186,7 +189,6 @@ class Node:
         self.listenForRequests(server_socket)
 
 
-
     def listenForRequests(self, sock, buffer = 1024):
         """
             listens for incomming traffic forever.
@@ -194,16 +196,23 @@ class Node:
                 sock : socket   -   the socket which the server listens to (is bound to this node's address)
                 buffer : int    -   The buffer that the receiving message can hold
         """
+        #sock.setblocking(0)
         while True:
+            if self.stopServerThread:
+                print("LLLLLLLL")
+                break
             message, address = sock.recvfrom(buffer)
             print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
             self.processRequest(sock, message, address)
 
+
     def stopUDPServer(self):
         #TODO Try catch to gracefully stop the server 
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Stopping server...")
+        self.stopServerThread = True
         self.serverThread.join()
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
+        self.serverThread = None
 
     def processRequest(self, sock, message, address):
         """
@@ -260,34 +269,3 @@ class MeshNetwork:
 
 if __name__ == '__main__':
     pass
-    #print("HULLOMJHEJ")
-    #https://stackoverflow.com/questions/2084508/clear-the-terminal-in-python
-    #os.system('cls' if os.name == 'nt' else 'clear')
-    #network = [Node('', 65000), Node('', 65001), Node('', 65004), Node('', 65099)]
-
-    #send_node = Node('', 65003, 2) # will send a message to 65000 through (65001 or 65004)
-    #network.append(send_node)
-    #send_node.sendData(b'Hello 65001 from {},format(send_node.source_port)', '', 65001)
-    #network[0].connections.append(('', 650044))
-
-    #Thr = []
-    # start
-    #for node in network:
-    #    #print("spawning thread")
-    #    #Thr.append(threading.Thread(group=None, target=node.reconNetwork))
-    #    node.reconNetwork()
-
-    ##for t in Thr:
-    ##    t.start()
-
-    ##for t in Thr:
-    ##    t.join()
-
-    ## end
-    #for node in network:
-    #    node.nodeStatus()
-
-    ##n.sendData(b'Hello from me', '', 65001)
-
-
-
