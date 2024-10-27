@@ -140,7 +140,7 @@ class Node:
         start = time.time()
         client_socket.sendto(data, (destIp, destPort))
         print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
-              "Sending message")}:{data!r}')
+              "Message sent!..")}:{data!r}')
 
         if requireACK:
             try:
@@ -196,10 +196,9 @@ class Node:
                 sock : socket   -   the socket which the server listens to (is bound to this node's address)
                 buffer : int    -   The buffer that the receiving message can hold
         """
-        #sock.setblocking(0)
         while True:
             if self.stopServerThread:
-                print("LLLLLLLL")
+                print(f'{self.diagnositcPrepend("listenForRequests()", "Server received stop flag ...")}')
                 break
             message, address = sock.recvfrom(buffer)
             print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
