@@ -10,8 +10,18 @@ import random
 import time
 import datetime
 import threading
+import re
 from typing import List, Tuple#, Self
 
+from enum import Enum
+
+class RoutingProtocols(Enum):
+    ISOLATION = 0
+    CENTRALIZED = 1
+    DISTRIBUTED = 2
+    FLOODING  = 3
+    RANDOM_WALK  = 4
+    NONE  = 5
 
 class bcolors:
     HEADER = '\033[95m'
@@ -42,13 +52,15 @@ class Node:
     stopServerThread : bool= None
 
     enableDiagnostics : bool
+    routing : RoutingProtocols
 
-    def __init__(self, serverIp, serverPort, portStrength = 3, enableDiagnostics = True):
+    def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True):
         self.iden = "".join([chr(random.randint(65, 90)) for _ in range(16)])
         self.serverIp = serverIp
         self.serverPort = serverPort
         self.enableDiagnostics = enableDiagnostics
         self.portStrength = portStrength
+        self.routing = RoutingProtocol
 
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
         if (self.connections is None):
@@ -93,7 +105,7 @@ class Node:
                 continue
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             client_socket.settimeout(sockTimeout)
-            data = b'ping'
+            data = b'PING'
 
             print(f'{self.diagnositcPrepend("reconNetwork()", "Starting recon as a thread")}')
 
@@ -116,8 +128,6 @@ class Node:
                 self.connections.append(server)
         except socket.timeout:
             pass
-            #print(f'{self.diagnositcPrepend("reconNetwork()", f"No node found on {destPort}. Continuing")}')
-            #continue
 
     def nodeStatus(self):
         """
@@ -150,7 +160,9 @@ class Node:
                 # f strings produce sanitised strings if bytes are input
                 # Therefore !r makes it 'bytes' spcifically
                 print(f'{self.diagnositcPrepend("sendData()",
-                      f"received message from {server}")}:{recData!r} {elapsed}')
+                      f"received ACK from {server}")}:{recData!r} {elapsed}')
+                if recData == b'ACK':
+                    print("LKJDLKJLKFJLKDJFJAFOMAN")
             except socket.timeout:
                 print('REQUEST TIMED OUT')
 
@@ -213,7 +225,7 @@ class Node:
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
         self.serverThread = None
 
-    def processRequest(self, sock, message, address):
+    def processRequest(self, sock, message, address, errMsg=""):
         """
             processes a request from another node
             @param
@@ -221,50 +233,89 @@ class Node:
                 message : bytes -   The bytes that were tranferred to this node and needs to be processed
                 address : tuple(str, int) The address the message came from
         """
-        match message:
-            case b'ping':
+        # splitting up the message 
+        cmd, rest_message = self.extractCommand(message)
+        print(f"cmd : {cmd} and rmessage {rest_message}")
+        match cmd:
+            case 'PING':
                 print(f'{self.diagnositcPrepend("processRequest()", f"processing request {message!r}, responding back with pong...")}')
                 sock.sendto(b'pong', address)
-            case b'ACK':
+            case 'ACK':
                 print(f'{self.diagnositcPrepend("processRequest()", f"processing request {message!r}, responding back with ACK...")}')
-                sock.sendto(b'pong', address)
+                sock.sendto(b'ACK', address)
+                self.processRequest(sock, rest_message, address)
+            
+            case 'MSG':
+                print(f'{self.diagnositcPrepend("processRequest()", f"--- Message received! : {message!r}")} : from {address} ---')
+            case 'ROUTE':
+                print(f'{self.diagnositcPrepend("processRequest()", f"Routing message request with {self.routing.name} of message {message!r}")} : from {address}')
+                adr, rest_message = self.extractCommand(rest_message)
+                # Find anything in the format ('*', number<0, 65535>)
+                match = re.search("^\('*', \d{0,65535}\)$", adr.trim)
+                if match is None:
+                    print(f'{self.diagnositcPrepend("processRequest()", f"Malformed request with {self.routing.name} of message {message!r}")} : from {address} sending errMessage back')
+                    # Do request again, but without the malformed request.
+                    # prepend err flag and add an error message. Send it to 
+                    rest_message = self.prependCommand(rest_message, "ERR")
+                    self.processRequest(sock, rest_message, address, errMsg="Malfored request")
+                else:
+                    # make the string into a tuple
+                    requestedReceiver = tuple(cmd.split(" "))
+                    # If the address match, do not do anymore routing
+                    print(f'serverIp {self.serverIp} serverPort {self.serverPort}, reqRe {requestedReceiver[0]} and {requestedReceiver[1]} ')
+                    if self.serverIp == requestedReceiver[0] and self.serverPort == requestedReceiver[1]:
+                        # stop and process the request
+                        print(f'{self.diagnositcPrepend("processRequest()", "Route Equals this adress! ")}')
+                        self.processRequest(sock, rest_message, address)
+                    else:
+                        self.processRouteRequest(sock, message, address)
+
             case _:
                 print(f'{self.diagnositcPrepend("processRequest()", f"COULD NOT PROCESS REQUEST {message!r}")} : from {address}')
+                errMsg = "COULD NOT PROCESS REQUEST : " + errMsg
+                sock.sendto(errMsg, address)
 
 
-#-------------------------------------------------- 
+    def extractCommand(self, message : bytes):
+        cmd_list = message.decode("utf-8").split(" ")
+        messageCmd = cmd_list[0].upper()
+        rest_message = " ".join(cmd_list[1:]).encode("utf-8")
+        return messageCmd, rest_message
 
+    def prependCommand(self, message : bytes, tag : str):
+        cmd_list = message.decode("utf-8").split(" ")
+        pmessage = list(reversed(cmd_list))
+        pmessage.append(tag)
+        pmessage = list(reversed(pmessage))
+        returnMessage = " ".join(pmessage).encode("utf-8")
+        return returnMessage
 
-class Connection:
-   source : Node
-   destination : Node
-   SNR : float
-
-
-class IComProtocol(metaclass=abc.ABCMeta):
-    nodes : list[Node]
-    connections : list[Connection]
-
-    @abc.abstractmethod
-    def addNode(self, node: Node):
-        pass
-
-
-class Flooding(IComProtocol):
-    def __init__(self, nodes : list[Node]):
-        pass
-
-    def addNode(self, node : Node):
-        self.nodes.append(node)
-
-class Routing(IComProtocol):
-    pass
-
-class MeshNetwork:
-    network : IComProtocol
-    def __init__(self, NetworkType):
-        self.network = NetworkType
-
+    def processRouteRequest(self, sock, message, address):
+        print(f'{self.diagnositcPrepend("processRouteRequest()", "processing the routing algorithms...")} : from {address}')
+        match self.routing:
+            case RoutingProtocols.ISOLATION:
+                print(RoutingProtocols.ISOLATION)
+            case RoutingProtocols.CENTRALIZED:
+                print(RoutingProtocols.CENTRALIZED)
+            case RoutingProtocols.DISTRIBUTED:
+                print(RoutingProtocols.DISTRIBUTED)
+            case RoutingProtocols.FLOODING:
+                print(RoutingProtocols.FLOODING)
+            case RoutingProtocols.RANDOM_WALK:
+                print(RoutingProtocols.RANDOM_WALK)
+            case RoutingProtocols.NONE:
+                print(RoutingProtocols.NONE)
 
 if __name__ == '__main__':
-    pass
+    n = Node("", 65000)
+    m = Node("", 65001)
+    network = []
+    network.append(n)
+    network.append(m)
+
+    for node in network:
+        node.reconNetwork()
+
+    time.sleep(8)
+    n.sendData(b'ACK MSG Hello world', '', 65001, requireACK=True)
+
