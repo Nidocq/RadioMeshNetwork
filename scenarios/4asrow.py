@@ -28,7 +28,10 @@ for node in network:
     node.nodeStatus()
 
 
-network[0].sendData(b"ROUTE MSG hello you", '', 65009)
+network[0].sendData(b"ROUTE 5 MSG hello you", '', 65009)
+
+for node in network:
+    node.serverThread.join()
 
 #for node in network:
 #    node.stopUDPServer()

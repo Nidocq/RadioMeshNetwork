@@ -149,7 +149,7 @@ class Node:
                 requireACK: bool-   when sending out a message, listen for an ACK
                 timeout: int    -   The time it should take for the ACK to respond
         """
-        print(f'{self.diagnositcPrepend("sendData()", f"Init message, sending to {destIp}, {destPort}")}:{data!r}')
+        print(f'{self.diagnositcPrepend("sendData()", f"Init message, sending to {destIp}, {destPort}")} with data : {data!r}')
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if re.search(r"^ROUTE", data.decode("utf-8")):
             self.processRouteRequest(client_socket, data, (destIp, destPort))
@@ -326,22 +326,27 @@ class Node:
                 address : tuple(str,itn) -   address (ip, port)
         """
         strMessage = message.decode("utf-8")
+        print(f'{self.diagnositcPrepend("processRouteRequest()", "init routing algorithms...")} : req for {address} with message {strMessage}')
         # Look for the number of hops
-        print(f"DEBUGGING : {re.fullmatch(r'ROUTE \d{0,65535}', strMessage)}")
-        if re.fullmatch(r"ROUTE \d{0,65535}", strMessage):
-            # if we find the hops, check if it is 0 and throw error
-            hopNumber = int(re.findall(r"\d+", strMessage)[0])
-            if hopNumber <= 0:
-                errMessage = self.prependCommand(message, "ERR")
-                self.processRequest(sock, errMessage, address, errMsg="Hops limit reached")
-
-            hopNumber -= 1
-            message = strMessage.replace("ROUTE", "ROUTE " + str() +  "('" + address[0] + "'," + str(address[1]) + ") ").encode("utf-8")
-        else:
+        if not re.match(r"^ROUTE [0-9]+", strMessage):
+            print(f'{self.diagnositcPrepend("processRouteRequest()", "ROUTE does not exists in the query...")} : req for {address} with message {message!r}')
             message = self.prependCommand(message, "ERR")
             self.processRequest(sock, message, address, "ROUTE request could not be processed as it does not contain 'ROUTE'")
 
-        print(f'{self.diagnositcPrepend("processRouteRequest()", "processing the routing algorithms...")} : from {address} with message {message!r}')
+            return
+
+        else:
+            hopNumber = int(re.findall(r"[0-9]+", strMessage)[0])
+            if hopNumber <= 0:
+                print(f'{self.diagnositcPrepend("processRouteRequest()", "Hops limit reached!...")} : req for {address} with message {message!r}')
+                errMessage = self.prependCommand(message, "ERR")
+                self.processRequest(sock, errMessage, address, errMsg="Hops limit reached")
+                return
+
+            hopNumber -= 1
+            message = strMessage.replace("ROUTE", "ROUTE " + str(hopNumber) +  "('" + address[0] + "'," + str(address[1]) + ") ").encode("utf-8")
+
+        print(f'{self.diagnositcPrepend("processRouteRequest()", "processing the routing algorithms...")} : req for {address} with message {message!r}')
         match self.routing:
             case RoutingProtocols.ISOLATION:
                 print(RoutingProtocols.ISOLATION)
@@ -375,4 +380,5 @@ if __name__ == '__main__':
 
     time.sleep(1)
     n.sendData(b'ROUTE MSG Hello world', '', 65001)
+
 
