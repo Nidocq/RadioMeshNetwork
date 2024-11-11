@@ -16,7 +16,7 @@ This program will make three nodes. one with
 """
 
 
-network = [Node("", 65000, RoutingProtocols.FLOODING),
+network = [Node("", 65000, RoutingProtocols.FLOODING, hopLimit=1),
            Node("", 65003, RoutingProtocols.FLOODING),
            Node("", 65006, RoutingProtocols.FLOODING),
            Node("", 65009, RoutingProtocols.FLOODING)]
@@ -28,7 +28,7 @@ for node in network:
     node.nodeStatus()
 
 
-network[0].sendData(b"ROUTE 5 MSG hello you", '', 65009)
+network[0].sendData(b"ROUTE MSG hello you", '', 65009)
 
 for node in network:
     node.serverThread.join()

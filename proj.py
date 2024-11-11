@@ -45,6 +45,7 @@ class Node:
     connections : List[Tuple[str, int]] = None
     serverIp : str
     serverPort : int
+    hopLimit : int
 
     # this will indicates the strength of a radio signal if it was
     # just a signal. If this is set to 10, this will search for other
@@ -58,13 +59,14 @@ class Node:
     enableDiagnostics : bool
     routing : RoutingProtocols
 
-    def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True):
+    def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True, hopLimit = 3):
         self.iden = "".join([chr(random.randint(65, 90)) for _ in range(16)])
         self.serverIp = serverIp
         self.serverPort = serverPort
         self.enableDiagnostics = enableDiagnostics
         self.portStrength = portStrength
         self.routing = RoutingProtocol
+        self.hopLimit = hopLimit
 
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
         if (self.connections is None):
@@ -109,11 +111,10 @@ class Node:
                 continue
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             client_socket.settimeout(sockTimeout)
-            data = b'PING'
 
             print(f'{self.diagnositcPrepend("reconNetwork()", "Starting recon as a thread")}')
 
-            t = threading.Thread(group=None, target=self.tryPing, args=(data, destIp, portScan, client_socket))
+            t = threading.Thread(group=None, target=self.tryPing, args=(destIp, portScan, client_socket))
             reconThreads.append(t)
 
         for t in reconThreads:
@@ -122,9 +123,17 @@ class Node:
         for t in reconThreads:
             t.join()
 
-    def tryPing(self, data, destIp, destPort, sock):
+    def tryPing(self, destIp, destPort, sock):
+        """
+            Pings a specific destination ip & port on a specific socket. If a pong response is received
+            the messeger will be added to this node's connections
+            @param
+                destIp : str    - The destination Ip to ping
+                destPort  : str - The destination port  to ping
+                sock  : sock    - The given socket to send the message over
+        """
         print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {destPort} for nodes")}')
-        sock.sendto(data, (destIp, destPort))
+        sock.sendto("ping", (destIp, destPort))
         try:
             recData, server = sock.recvfrom(1024)
             if (recData == b'pong'):
@@ -149,10 +158,31 @@ class Node:
                 requireACK: bool-   when sending out a message, listen for an ACK
                 timeout: int    -   The time it should take for the ACK to respond
         """
-        print(f'{self.diagnositcPrepend("sendData()", f"Init message, sending to {destIp}, {destPort}")} with data : {data!r}')
+        print(f'{self.diagnositcPrepend("sendData()", f"Init message, sending to {destIp}, {destPort}")} with data : {self.bytesToStr(data)}')
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if re.search(r"^ROUTE", data.decode("utf-8")):
-            self.processRouteRequest(client_socket, data, (destIp, destPort))
+            strData = data.decode("utf-8")
+            _, rest_message = self.extractCommand(data)
+
+            match self.routing:
+                case RoutingProtocols.ISOLATION:
+                    print(RoutingProtocols.ISOLATION)
+                case RoutingProtocols.CENTRALIZED:
+                    print(RoutingProtocols.CENTRALIZED)
+                case RoutingProtocols.DISTRIBUTED:
+                    print(RoutingProtocols.DISTRIBUTED)
+                case RoutingProtocols.FLOODING:
+                    strData = strData.replace("ROUTE", f"ROUTE {self.hopLimit} ('{destIp}',{destPort})")
+                    data = strData.encode("utf-8")
+                case RoutingProtocols.RANDOM_WALK:
+                    print(RoutingProtocols.RANDOM_WALK)
+                case RoutingProtocols.NONE:
+                    print(RoutingProtocols.NONE)
+                case _:
+                    print(RoutingProtocols.NONE)
+
+            # ----------------------------------
+            self.processRouteRequest(client_socket, data, (self.serverIp, self.serverPort))
             return
 
         if requireACK:
@@ -161,17 +191,15 @@ class Node:
         start = time.time()
         client_socket.sendto(data, (destIp, destPort))
         print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
-              "Message sent!..")}:{data!r}')
+              "Message sent!..")}:{self.bytesToStr(data)}')
 
         if requireACK:
             try:
                 recData, server = client_socket.recvfrom(1024)
                 end = time.time()
                 elapsed = end - start
-                # f strings produce sanitised strings if bytes are input
-                # Therefore !r makes it 'bytes' spcifically
                 print(f'{self.diagnositcPrepend("sendData()",
-                      f"received ACK from {server}")}:{recData!r} {elapsed}')
+                      f"received ACK from {server}")}:{self.bytesToStr(recData)} {elapsed}')
                 if recData == b'ACK':
                     print("ACK Acknowlegded")
             except socket.timeout:
@@ -223,9 +251,9 @@ class Node:
             if self.stopServerThread:
                 print(f'{self.diagnositcPrepend("listenForRequests()", "Server received stop flag ...")}')
                 break
-            message, address = sock.recvfrom(buffer)
-            print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {address}")} : {message!r}')
-            self.processRequest(sock, message, address)
+            message, sender = sock.recvfrom(buffer)
+            print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {sender}")} : {self.bytesToStr(message)}')
+            self.processRequest(sock, message, sender)
 
 
     def stopUDPServer(self):
@@ -236,54 +264,54 @@ class Node:
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
         self.serverThread = None
 
-    def processRequest(self, sock, message : bytes, address : Tuple[str, int], errMsg=""):
+    def processRequest(self, sock, message : bytes, sender : Tuple[str, int], errMsg=""):
         """
             processes a request from another node
             @param
                 sock : socket   -   The open socket which the request came from
                 message : bytes -   The bytes that were tranferred to this node and needs to be processed
-                address : tuple(str, int) The address the message came from
+                sender : tuple(str, int) The sender the message came from
                 errMsg  : str   -   OPTIONAL If any error message should be reported they are appended here.
         """
         # splitting up the message 
         cmd, rest_message = self.extractCommand(message)
-        print(f"cmd : {cmd} and rmessage {rest_message!r}")
+        print(f"cmd : {cmd} and rmessage {self.bytesToStr(rest_message)}")
         match cmd:
-            case 'PING':
-                print(f'{self.diagnositcPrepend("processRequest()", f"processing request {message!r}, responding back with pong...")}')
-                sock.sendto(b'pong', address)
-            case 'ACK':
-                print(f'{self.diagnositcPrepend("processRequest()", f"processing request {message!r}, responding back with ACK...")}')
-                sock.sendto(b'ACK', address)
-                self.processRequest(sock, rest_message, address)
             case 'MSG':
-                print(f'{self.diagnositcPrepend("processRequest()", f"--- Message received! : {message!r}")} : from {address} ---')
+                print(f'{self.diagnositcPrepend("processRequest()", f"--- Message received! : {self.bytesToStr(message)}")} : from {sender} ---')
+            case 'PING':
+                print(f'{self.diagnositcPrepend("processRequest()", f"processing request {self.bytesToStr(message)}, responding back with pong...")}')
+                sock.sendto(b'pong', sender)
+            case 'ACK':
+                print(f'{self.diagnositcPrepend("processRequest()", f"processing request {self.bytesToStr(message)}, responding back with ACK...")}')
+                sock.sendto(b'ACK', sender)
+                self.processRequest(sock, rest_message, sender)
             case 'ROUTE':
-                print(f'{self.diagnositcPrepend("processRequest()", f"Routing message request with {self.routing.name} of message {message!r}")} : from {address}')
+                hops, rest_message = self.extractCommand(rest_message)
                 adr, rest_message = self.extractCommand(rest_message)
+                print(f'{self.diagnositcPrepend("processRequest()", f"Routing message request as {self.routing.name} of message {self.bytesToStr(message)}")} : from {sender}, \n cmd : {cmd} \n hops : {hops} \n adr : {adr}')
                 # Find anything in the format ('*', number<0, 65535>)
-                print(f"THIS IS adr!!!! {adr.strip()}")
                 match = re.search(r"^\('*',\d{0,65535}\)$", adr.strip())
                 if match is None:
-                    print(f'{self.diagnositcPrepend("processRequest()", f"Malformed request with {self.routing.name} of message {message!r}")} : from {address} sending errMessage back')
+                    print(f'{self.diagnositcPrepend("processRequest()", f"Malformed request with {self.routing.name} of message {self.bytesToStr(message)}")} : from {sender} sending errMessage back')
                     # Do request again, but without the malformed request.
                     # prepend err flag and add an error message. Send it to 
                     rest_message = self.prependCommand(rest_message, "ERR")
-                    self.processRequest(sock, rest_message, address, errMsg="Malfored request")
+                    self.processRequest(sock, rest_message, sender, errMsg="Malfored request")
                 else:
                     # make the string into a tuple
-                    requestedReceiver = tuple(cmd.split(" "))
+                    requestedReceiver = tuple(adr.split(","))
                     print(f"REQUESTSED RECEIVER : {requestedReceiver}")
-                    # If the address match, do not do anymore routing
+                    # If the receiver match, do not do anymore routing
                     print(f'serverIp {self.serverIp} serverPort {self.serverPort}, reqRe {requestedReceiver[0]} and {requestedReceiver[1]} ')
                     if self.serverIp == requestedReceiver[0] and self.serverPort == requestedReceiver[1]:
                         # stop and process the request
-                        print(f'{self.diagnositcPrepend("processRequest()", "Route Equals this adress! ")}')
-                        self.processRequest(sock, rest_message, address)
+                        print(f'{self.diagnositcPrepend("processRequest()", "ROUTE EQUALS THIS ADRESS! ")}')
+                        self.processRequest(sock, rest_message, sender)
                     else:
-                        self.processRouteRequest(sock, message, address)
+                        self.processRouteRequest(sock, message, sender)
             case 'ERR':
-                print(f'{self.diagnositcPrepend("processRequest()", f"COULD NOT PROCESS REQUEST {message!r} because {errMsg}")}')
+                print(f'{self.diagnositcPrepend("processRequest()", f"COULD NOT PROCESS REQUEST {self.bytesToStr(message)} because {errMsg}")}')
             case _:
                 print("___")
 
@@ -317,36 +345,38 @@ class Node:
         returnMessage = " ".join(pmessage).encode("utf-8")
         return returnMessage
 
-    def processRouteRequest(self, sock, message : bytes, address : Tuple[str, int]):
+    def processRouteRequest(self, sock, message : bytes, sender : Tuple[str, int]):
         """
             processes a request that has to be routed/relayed.
             @param
                 sock : socket   -   socket given from where request came from (in case of sending information back
                 message : bytes -   the bytes (payload) of the requets
-                address : tuple(str,itn) -   address (ip, port)
+                sender : tuple(str,itn) -   sender (ip, port)
         """
         strMessage = message.decode("utf-8")
-        print(f'{self.diagnositcPrepend("processRouteRequest()", "init routing algorithms...")} : req for {address} with message {strMessage}')
+        err = None
+        cmd, rest_message = self.extractCommand(message)
+        hops, rest_message = self.extractCommand(rest_message)
+        adr, rest_message = self.extractCommand(rest_message)
+        print(f"hops : {hops}")
+        print(f'{self.diagnositcPrepend("processRouteRequest()", f"Parsing request as {self.routing.name} of message {self.bytesToStr(message)}")} : from {sender}, \n cmd : {cmd} \n hops : {hops} \n adr : {adr}')
         # Look for the number of hops
-        if not re.match(r"^ROUTE [0-9]+", strMessage):
-            print(f'{self.diagnositcPrepend("processRouteRequest()", "ROUTE does not exists in the query...")} : req for {address} with message {message!r}')
-            message = self.prependCommand(message, "ERR")
-            self.processRequest(sock, message, address, "ROUTE request could not be processed as it does not contain 'ROUTE'")
-
+        if not cmd == "ROUTE":
+            print(f'{self.diagnositcPrepend("processRouteRequest()", "ROUTE does not exists in the query...")} : req for {sender} with message {self.bytesToStr(message)}')
+            err = "ROUTE request could not be processed as it does not contain 'ROUTE'"
+        elif not int(hops) > 0:
+            print(f'{self.diagnositcPrepend("processRouteRequest()", "Hops limit reached!...")} : req for {sender} with message {self.bytesToStr(message)}')
+            err = "Hops limit reached"
+        if err:
+            errMessage = self.prependCommand(message, "ERR")
+            self.processRequest(sock, errMessage, sender, err)
             return
 
-        else:
-            hopNumber = int(re.findall(r"[0-9]+", strMessage)[0])
-            if hopNumber <= 0:
-                print(f'{self.diagnositcPrepend("processRouteRequest()", "Hops limit reached!...")} : req for {address} with message {message!r}')
-                errMessage = self.prependCommand(message, "ERR")
-                self.processRequest(sock, errMessage, address, errMsg="Hops limit reached")
-                return
+        strHops = int(hops) - 1
+        message = self.strToBytes(re.sub(r"^ROUTE [0-9]+", f"ROUTE {strHops}", strMessage))
+        #message = strMessage.replace("ROUTE", "ROUTE " + str(hopNumber) +  "('" + sender[0] + "'," + str(sender[1]) + ") ").encode("utf-8")
 
-            hopNumber -= 1
-            message = strMessage.replace("ROUTE", "ROUTE " + str(hopNumber) +  "('" + address[0] + "'," + str(address[1]) + ") ").encode("utf-8")
-
-        print(f'{self.diagnositcPrepend("processRouteRequest()", "processing the routing algorithms...")} : req for {address} with message {message!r}')
+        print(f'{self.diagnositcPrepend("processRouteRequest()", "processing the routing algorithms...")} : req for {sender} with message {self.bytesToStr(message)}')
         match self.routing:
             case RoutingProtocols.ISOLATION:
                 print(RoutingProtocols.ISOLATION)
@@ -356,10 +386,13 @@ class Node:
                 print(RoutingProtocols.DISTRIBUTED)
             case RoutingProtocols.FLOODING:
                 for con in self.connections:
-                    print("Go brrrrr")
-                    print(f"con[0] {con[0]}, con[1] {con[1]}")
-                    #sock.sendto(message, (con[0], con[1]))
-                    self.sendData(message, con[0], con[1])
+                    print(f"con[0] {con[0]} sender[0] : {sender[0]} con[1] : {con[1]} sender[1] : {sender[1]}")
+                    if not con[0] == sender[0] or not con[1] == sender[1]:
+                        print("Passing request along...")
+                        print(f"con[0] {con[0]}, con[1] {con[1]}")
+                        sock.sendto(message, (con[0], con[1]))
+                    else:
+                        pass
             case RoutingProtocols.RANDOM_WALK:
                 print(RoutingProtocols.RANDOM_WALK)
             case RoutingProtocols.NONE:
@@ -367,6 +400,12 @@ class Node:
             case _:
                 print(RoutingProtocols.NONE)
 
+
+
+    def strToBytes(self, s : str) -> bytes:
+        return s.encode("utf-8")
+    def bytesToStr(self, b : bytes) -> str:
+        return b.decode("utf-8")
 
 if __name__ == '__main__':
     n = Node("", 65000)
