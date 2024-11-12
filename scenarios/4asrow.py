@@ -16,7 +16,7 @@ This program will make three nodes. one with
 """
 
 
-network = [Node("", 65000, RoutingProtocols.FLOODING, hopLimit=1),
+network = [Node("", 65000, RoutingProtocols.FLOODING),
            Node("", 65003, RoutingProtocols.FLOODING),
            Node("", 65006, RoutingProtocols.FLOODING),
            Node("", 65009, RoutingProtocols.FLOODING)]
