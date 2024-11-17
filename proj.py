@@ -5,8 +5,9 @@
 # You can read more on https://github.com/Nidocq/RadioMeshNetwork/blob/main/README.md
 
 
-# Make the stack that keeps track of redundant information being sent
-# Fix bug with server hanging
+# Make the stack that keeps track of redundant information being sent / this needs to be able to be set on and off
+# Add adding/deleting nodes to existing network
+# Finish the algorithms
 
 import socket
 import random
@@ -71,12 +72,14 @@ class Node:
 
     # indicate that we use server threads to communicate with other nodes
     serverThread = None
-    stopServerThread : bool= None
+    stopServerThread : bool = None
 
     enableDiagnostics : bool
     routing : RoutingProtocols
 
-    def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True, hopLimit = 3):
+    networkScanIntervalSec : int 
+
+    def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True, hopLimit = 3, networkScanIntervalSec = 10):
         random_fruit = random.choice(fruits)
         self.iden = random_fruit + "_" + "".join([chr(random.randint(65, 90)) for _ in range(8)]) # Create unique ID for node
         fruits.remove(random_fruit)
@@ -87,6 +90,7 @@ class Node:
         self.portStrength = portStrength
         self.routing = RoutingProtocol
         self.hopLimit = hopLimit
+        self.networkScanIntervalSec = networkScanIntervalSec 
 
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
         if (self.connections is None):
@@ -267,15 +271,19 @@ class Node:
                 sock : socket   -   the socket which the server listens to (is bound to this node's address)
                 buffer : int    -   The buffer that the receiving message can hold
         """
+        sock.settimeout(0.5)
         while True:
-            if self.stopServerThread:
-                print(f'{self.diagnositcPrepend("listenForRequests()", "Server received stop flag ...")}')
-                break
-            message, sender = sock.recvfrom(buffer)
-            print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {sender}")} : {self.bytesToStr(message)}')
+            try:
+                if self.stopServerThread:
+                    print(f'{self.diagnositcPrepend("listenForRequests()", "Server received stop flag ...")}')
+                    break
+                message, sender = sock.recvfrom(buffer)
+                print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {sender}")} : {self.bytesToStr(message)}')
 
-            self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
-            self.processRequest(sock, message, sender)
+                self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
+                self.processRequest(sock, message, sender)
+            except socket.timeout:
+                pass
 
 
     def stopUDPServer(self):
@@ -283,8 +291,8 @@ class Node:
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Stopping server...")
         self.stopServerThread = True
         self.serverThread.join()
-        print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
         self.serverThread = None
+        print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
 
     def processRequest(self, sock, message : bytes, sender : Tuple[str, int], errMsg=""):
         """
@@ -299,7 +307,7 @@ class Node:
         cmd, rest_message = self.extractCommand(message)
         match cmd:
             case 'MSG':
-                print(f'{self.diagnositcPrepend("processRequest() [MSG]", f"--- Message received! : {self.bytesToStr(message)}")} : from {sender} ---')
+                print(f'{self.diagnositcPrepend("processRequest() [MSG]", f"Message received! : {self.bytesToStr(message)}")} : from {sender}')
             case 'PING':
                 print(f'{self.diagnositcPrepend("processRequest() [PING]", f"processing request {self.bytesToStr(message)}, responding back with pong...")}')
                 sock.sendto(b'pong', sender)
@@ -408,9 +416,7 @@ class Node:
             case RoutingProtocols.FLOODING:
                 print(RoutingProtocols.FLOODING)
                 for con in self.connections:
-                    #print(f"con[0] {con[0]} sender[0] : {sender[0]} con[1] : {con[1]} sender[1] : {sender[1]}")
                     if not con[0] == sender[0] or not con[1] == sender[1]:
-                        print("Passing request along...")
                         sock.sendto(message, (con[0], con[1]))
                     else:
                         pass
@@ -478,8 +484,11 @@ if __name__ == '__main__':
         node.reconNetwork()
 
     time.sleep(1)
-    n.sendData(b'ROUTE MSG Hello world', '', 65001)
+    #n.sendData(b'ROUTE MSG Hello world', '', 65001)
 
     #print(f" Request count : {n.printNetworkStats()}")
+else:
+    print("Node library imported!")
+    pass
 
 

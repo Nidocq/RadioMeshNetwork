@@ -17,8 +17,10 @@ class TestSuite(unittest.TestCase):
         self.assertEqual(sut.serverPort, 65001)
         self.assertEqual(sut.portStrength, 3) # default value
         sut.stopUDPServer()
+
+        # Wait for the thread to finish
         self.assertTrue(sut.serverThread is None)
-        exit(0)
+
 
 
     def test_proj_EveryNodeSeeEachOther(self):
@@ -45,6 +47,7 @@ class TestSuite(unittest.TestCase):
         for node in network:
             node.stopUDPServer()
 
+
     def test_proj_OneNodeDoesNotSeeNetwork(self):
         #Which is the port 65099
         network = [Node('', 65000, portStrength=3),
@@ -61,8 +64,8 @@ class TestSuite(unittest.TestCase):
 
         self.assertTrue(any(checkList))
 
-        #for node in network:
-        #    node.stopUDPServer()
+        for node in network:
+            node.stopUDPServer()
 
 
 if __name__ == '__main__':

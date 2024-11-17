@@ -30,10 +30,5 @@ for node in network:
 
 network[0].sendData(b"ROUTE MSG hello you", '', 65009)
 
-time.sleep(2)
-#print(f" Request count : {network[0].printNetworkCongestion()}")
 for node in network:
-    node.serverThread.join()
-
-#for node in network:
-#    node.stopUDPServer()
+    node.stopUDPServer()
