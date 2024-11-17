@@ -4,20 +4,24 @@
 # justify the underlying logic on an actual implementation.
 # You can read more on https://github.com/Nidocq/RadioMeshNetwork/blob/main/README.md
 
-# TODO the .encode('utf-8') what does it do, make it more explict with a function `def make_to_bytes()`
-# TODO make the error messages for the processRequest a little better when reporting for instance
-            # message = self.prependCommand(message, "ERR")
-            # self.processRequest(sock, message, address, "ROUTE request could not be processed as it does not contain 'ROUTE' or hops is not specified")
-
 import socket
 import random
 import time
 import datetime
-import threading
+from threading import Thread, Lock 
 import re
 from typing import List, Tuple#, Self
 
 from enum import Enum
+
+mutex = Lock()
+recv_network_requests = 0
+sent_network_requests = 0
+
+class DiagnosticStats(Enum):
+    RECV_REQ = 0
+    SENT_REQ = 1
+    AVG_TIME_REQ_RECV = 2
 
 class RoutingProtocols(Enum):
     ISOLATION = 0
@@ -38,10 +42,10 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+
 class Node:
     iden : str
     position : str = "earth"
-
     connections : List[Tuple[str, int]] = None
     serverIp : str
     serverPort : int
@@ -90,7 +94,7 @@ class Node:
             print("Server already running, please run stopUDPServer() before making new connection")
             exit(1)
         else:
-            serverThread = threading.Thread(group=None, target=self.startUDPServer, args=(ip, port), daemon=True)
+            serverThread = Thread(group=None, target=self.startUDPServer, args=(ip, port), daemon=True)
             self.serverThread = serverThread
             self.serverThread.start()
 
@@ -103,7 +107,7 @@ class Node:
             @param
                 sockTimeout : int   -   The amount of time it should take for each port to timeout
         """
-        reconThreads : list[threading.Thread] = []
+        reconThreads : list[Thread] = []
         # +1 because we skip our own port and we don't want our own port to count towards the strength
         for portScan in range(self.serverPort - self.portStrength, self.serverPort + self.portStrength+1):
             if (portScan == self.serverPort):
@@ -114,7 +118,7 @@ class Node:
 
             print(f'{self.diagnositcPrepend("reconNetwork()", "Starting recon as a thread")}')
 
-            t = threading.Thread(group=None, target=self.tryPing, args=(destIp, portScan, client_socket))
+            t = Thread(group=None, target=self.tryPing, args=(destIp, portScan, client_socket))
             reconThreads.append(t)
 
         for t in reconThreads:
@@ -253,6 +257,8 @@ class Node:
                 break
             message, sender = sock.recvfrom(buffer)
             print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {sender}")} : {self.bytesToStr(message)}')
+
+            self.increaseNetwork(diagnostic=True)
             self.processRequest(sock, message, sender)
 
 
@@ -275,7 +281,6 @@ class Node:
         """
         # splitting up the message 
         cmd, rest_message = self.extractCommand(message)
-        print(f"cmd : {cmd} and rmessage {self.bytesToStr(rest_message)}")
         match cmd:
             case 'MSG':
                 print(f'{self.diagnositcPrepend("processRequest() [MSG]", f"--- Message received! : {self.bytesToStr(message)}")} : from {sender} ---')
@@ -289,7 +294,7 @@ class Node:
             case 'ROUTE':
                 hops, rest_message = self.extractCommand(rest_message)
                 adr, rest_message = self.extractCommand(rest_message)
-                print(f'{self.diagnositcPrepend("processRequest() [ROUTE]", f"Routing message request as {self.routing.name} of message {self.bytesToStr(message)}")} : from {sender}, \n cmd : {cmd} \n hops : {hops} \n adr : {adr}')
+                print(f'{self.diagnositcPrepend("processRequest() [ROUTE]", f"Routing message request as {self.routing.name} of message {self.bytesToStr(message)}")}\n from {sender}, \n cmd : {cmd} \n hops : {hops} \n adr : {adr} \n network_hops total : {self.printNetworkStats()}')
                 # Find anything in the format ('*',number<0, 65535>)
                 match = re.search(r"^\('*',\d{0,65535}\)$", adr.strip())
                 if match is None:
@@ -409,9 +414,26 @@ class Node:
     def bytesToStr(self, b : bytes) -> str:
         return b.decode("utf-8")
 
+    def increaseNetwork(self, diagnostic=False):
+        global recv_network_requests
+        global sent_network_request
+       #global ...
+        with mutex:
+            recv_network_requests += 1
+            # ...
+
+        if diagnostic:
+            self.printNetworkStats()
+
+
+    def printNetworkStats(self):
+       #global ...
+
+        print(f'{self.diagnositcPrepend("printNetworkStats()", "")}recv_network_request : {recv_network_requests} \n\t[next diag]')
+
 if __name__ == '__main__':
-    n = Node("", 65000)
-    m = Node("", 65001)
+    n = Node("", 65000, RoutingProtocols.FLOODING)
+    m = Node("", 65001, RoutingProtocols.FLOODING)
     network = []
     network.append(n)
     network.append(m)
@@ -421,5 +443,7 @@ if __name__ == '__main__':
 
     time.sleep(1)
     n.sendData(b'ROUTE MSG Hello world', '', 65001)
+
+    #print(f" Request count : {n.printNetworkStats()}")
 
 

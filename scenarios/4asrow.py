@@ -1,4 +1,4 @@
-
+import time
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), './..')))
@@ -30,6 +30,8 @@ for node in network:
 
 network[0].sendData(b"ROUTE MSG hello you", '', 65009)
 
+time.sleep(2)
+#print(f" Request count : {network[0].printNetworkCongestion()}")
 for node in network:
     node.serverThread.join()
 
