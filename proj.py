@@ -4,15 +4,28 @@
 # justify the underlying logic on an actual implementation.
 # You can read more on https://github.com/Nidocq/RadioMeshNetwork/blob/main/README.md
 
+
+# Make the stack that keeps track of redundant information being sent
+# Fix bug with server hanging
+
 import socket
 import random
 import time
 import datetime
-from threading import Thread, Lock 
+from threading import Thread, Lock
 import re
 from typing import List, Tuple#, Self
 
 from enum import Enum
+
+fruits = [
+    "Apple", "Apricot", "Avocado", "Banana", "Blueberry",
+    "Cherry", "Date", "Durian", "Elderberry", "Fig",
+    "Gooseberry", "Grape", "Guava", "Jackfruit", "Kiwi",
+    "Lemon", "Lychee", "Mango", "Melon", "Orange",
+    "Papaya", "Pear", "Persimmon", "Pineapple", "Plum",
+    "Pomegranate", "Quince", "Raspberry", "Strawberry", "Tangerine"
+]
 
 mutex = Lock()
 recv_network_requests = 0
@@ -64,7 +77,10 @@ class Node:
     routing : RoutingProtocols
 
     def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True, hopLimit = 3):
-        self.iden = "".join([chr(random.randint(65, 90)) for _ in range(8)]) # Create unique ID for node
+        random_fruit = random.choice(fruits)
+        self.iden = random_fruit + "_" + "".join([chr(random.randint(65, 90)) for _ in range(8)]) # Create unique ID for node
+        fruits.remove(random_fruit)
+
         self.serverIp = serverIp
         self.serverPort = serverPort
         self.enableDiagnostics = enableDiagnostics
@@ -137,11 +153,11 @@ class Node:
                 sock  : sock    - The given socket to send the message over
         """
         print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {destPort} for nodes")}')
-        sock.sendto(b'ping', (destIp, destPort))
+        sock.sendto(b'ping', (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
         try:
-            recData, server = sock.recvfrom(1024)
+            recData, server = sock.recvfrom(1024) ; self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
             if (recData == b'pong'):
-                print(f'{self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!")}:')
+                print(self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!"))
                 self.connections.append(server)
         except socket.timeout:
             pass
@@ -187,19 +203,19 @@ class Node:
 
             # ----------------------------------
             self.processRouteRequest(client_socket, data, (self.serverIp, self.serverPort))
-            return
 
         if requireACK:
             client_socket.settimeout(timeout)
 
         start = time.time()
-        client_socket.sendto(data, (destIp, destPort))
+        client_socket.sendto(data, (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
         print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
               "Message sent!..")}:{self.bytesToStr(data)}')
 
         if requireACK:
             try:
                 recData, server = client_socket.recvfrom(1024)
+                self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
                 end = time.time()
                 elapsed = end - start
                 print(f'{self.diagnositcPrepend("sendData()",
@@ -258,7 +274,7 @@ class Node:
             message, sender = sock.recvfrom(buffer)
             print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {sender}")} : {self.bytesToStr(message)}')
 
-            self.increaseNetwork(diagnostic=True)
+            self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
             self.processRequest(sock, message, sender)
 
 
@@ -414,13 +430,28 @@ class Node:
     def bytesToStr(self, b : bytes) -> str:
         return b.decode("utf-8")
 
-    def increaseNetwork(self, diagnostic=False):
+    def increaseNetworkStats(self, stats : List[DiagnosticStats], diagnostic=False):
+        """
+            Increase global counter of network information by a list of Network diagnostic stats.
+            @param
+                stats : List[DiagnosticStats]   -   Given list of DiagnosticStats enums to increase to the respective counter of stats
+                (optional) diagnostic : bool    -   will print information about the network when a change has happened
+        """
         global recv_network_requests
-        global sent_network_request
+        global sent_network_requests
        #global ...
         with mutex:
-            recv_network_requests += 1
-            # ...
+            for stat in stats:
+                match stat:
+                    case DiagnosticStats.RECV_REQ:
+                        recv_network_requests += 1
+                    case DiagnosticStats.SENT_REQ:
+                        sent_network_requests += 1
+                    case DiagnosticStats.AVG_TIME_REQ_RECV:
+                        pass
+                    case _:
+                        print("Unknown network stat! (don't) PANIC")
+                        exit(1)
 
         if diagnostic:
             self.printNetworkStats()
@@ -429,7 +460,12 @@ class Node:
     def printNetworkStats(self):
        #global ...
 
-        print(f'{self.diagnositcPrepend("printNetworkStats()", "")}recv_network_request : {recv_network_requests} \n\t[next diag]')
+        print(f'''{self.diagnositcPrepend("printNetworkStats()", "")}
+        {DiagnosticStats.RECV_REQ.name} : {recv_network_requests}
+        {DiagnosticStats.SENT_REQ.name} : {sent_network_requests}
+        {DiagnosticStats.AVG_TIME_REQ_RECV.name} : [interval]
+        [next diag]
+               ''')
 
 if __name__ == '__main__':
     n = Node("", 65000, RoutingProtocols.FLOODING)
