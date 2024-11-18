@@ -72,16 +72,31 @@ class Node:
 
     # indicate that we use server threads to communicate with other nodes
     serverThread = None
+    networkDiscoveryThread = None
     stopServerThread : bool = None
 
     enableDiagnostics : bool
     routing : RoutingProtocols
 
-    networkScanIntervalSec : int 
+    scanIntervalSec : int
+    stackPrevMessages : List[str]
+    stackLimit : int
 
-    def __init__(self, serverIp, serverPort, RoutingProtocol = RoutingProtocols.NONE, portStrength = 3, enableDiagnostics = True, hopLimit = 3, networkScanIntervalSec = 10):
+
+    def __init__(self, serverIp,
+                 serverPort, 
+                 RoutingProtocol = RoutingProtocols.NONE, 
+                 portStrength = 3,
+                 enableDiagnostics = True, 
+                 hopLimit = 3, 
+                 persistNetworkDiscovery=True, 
+                 scanIntervalSec = 20, 
+                 stackLimit=10):
+
         random_fruit = random.choice(fruits)
         self.iden = random_fruit + "_" + "".join([chr(random.randint(65, 90)) for _ in range(8)]) # Create unique ID for node
+
+        # prevents duplicates of fruit
         fruits.remove(random_fruit)
 
         self.serverIp = serverIp
@@ -90,7 +105,11 @@ class Node:
         self.portStrength = portStrength
         self.routing = RoutingProtocol
         self.hopLimit = hopLimit
-        self.networkScanIntervalSec = networkScanIntervalSec 
+        self.persistNetworkDiscovery = persistNetworkDiscovery
+        if self.persistNetworkDiscovery:
+            self.scanIntervalSec = scanIntervalSec
+        self.stackPrevMessages = []
+        self.stackLimit = stackLimit
 
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
         if (self.connections is None):
@@ -118,7 +137,7 @@ class Node:
             self.serverThread = serverThread
             self.serverThread.start()
 
-    def reconNetwork(self, sockTimeout : int = 1, destIp = '', runAsThread=True):
+    def reconNetwork(self, sockTimeout : int = 1, destIp = '', runAsThread=True, isRunningAsThread=False): #, delayBeforeStart=0):
         """
             Will recon for other nodes in the vicinity for its self.portStrength self.connection
             this will mean that self.portStrength of 10, will search for every port from -10 to +10
@@ -127,25 +146,42 @@ class Node:
             @param
                 sockTimeout : int   -   The amount of time it should take for each port to timeout
         """
-        reconThreads : list[Thread] = []
-        # +1 because we skip our own port and we don't want our own port to count towards the strength
-        for portScan in range(self.serverPort - self.portStrength, self.serverPort + self.portStrength+1):
-            if (portScan == self.serverPort):
-                # If the port is the same as the node own port, skip
-                continue
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            client_socket.settimeout(sockTimeout)
 
-            print(f'{self.diagnositcPrepend("reconNetwork()", "Starting recon as a thread")}')
+        while True:
+            if not self.persistNetworkDiscovery:
+                return
 
-            t = Thread(group=None, target=self.tryPing, args=(destIp, portScan, client_socket))
-            reconThreads.append(t)
+            # here because if the netowrking should persist, then we want to spawn a thread of this function
+            # with a wait time, this will enable this function running continuasly, in fixed intervals
+            reconThreads : list[Thread] = []
+            # +1 because we skip our own port and we don't want our own port to count towards the strength
+            for portScan in range(self.serverPort - self.portStrength, self.serverPort + self.portStrength+1):
+                if (portScan == self.serverPort):
+                    # If the port is the same as the node own port, skip
+                    continue
+                client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                client_socket.settimeout(sockTimeout)
 
-        for t in reconThreads:
-            t.start()
+                print(f'{self.diagnositcPrepend("reconNetwork()", "Starting recon as a thread")}')
 
-        for t in reconThreads:
-            t.join()
+                t = Thread(group=None, target=self.tryPing, args=(destIp, portScan, client_socket))
+                reconThreads.append(t)
+
+
+            for t in reconThreads:
+                t.start()
+
+            for t in reconThreads:
+                t.join()
+
+
+            if runAsThread and not isRunningAsThread:
+                initTh = Thread(group=None, target=self.reconNetwork, kwargs={'isRunningAsThread' : True}, daemon=True)
+                self.networkDiscoveryThread = initTh
+                self.networkDiscoveryThread.start()
+                return
+
+            time.sleep(self.scanIntervalSec)
 
     def tryPing(self, destIp, destPort, sock):
         """
@@ -158,13 +194,20 @@ class Node:
         """
         print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {destPort} for nodes")}')
         sock.sendto(b'ping', (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
+
+        server = None
         try:
             recData, server = sock.recvfrom(1024) ; self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
             if (recData == b'pong'):
-                print(self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!"))
-                self.connections.append(server)
+                with mutex:
+                    print(self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!"))
+                    if server not in self.connections:
+                        self.connections.append(server)
         except socket.timeout:
             pass
+
+            if server and server in self.connections:
+                self.connections.remove(server)
 
     def nodeStatus(self):
         """
@@ -285,13 +328,20 @@ class Node:
             except socket.timeout:
                 pass
 
-
-    def stopUDPServer(self):
+    def stopUDPServer(self, waitForJoin=True):
         #TODO Try catch to gracefully stop the server 
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Stopping server...")
         self.stopServerThread = True
-        self.serverThread.join()
+        self.persistNetworkDiscovery = False
+
+        if waitForJoin:
+            self.serverThread.join()
+
+        if waitForJoin:
+            self.networkDiscoveryThread.join()
+
         self.serverThread = None
+        self.networkDiscoveryThread  = None
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Server Stopped! ")
 
     def processRequest(self, sock, message : bytes, sender : Tuple[str, int], errMsg=""):
