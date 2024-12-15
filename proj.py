@@ -19,23 +19,38 @@ from typing import List, Tuple#, Self
 
 from enum import Enum
 
-fruits = [
+fruitsvegs = [
     "Apple", "Apricot", "Avocado", "Banana", "Blueberry",
     "Cherry", "Date", "Durian", "Elderberry", "Fig",
     "Gooseberry", "Grape", "Guava", "Jackfruit", "Kiwi",
     "Lemon", "Lychee", "Mango", "Melon", "Orange",
     "Papaya", "Pear", "Persimmon", "Pineapple", "Plum",
-    "Pomegranate", "Quince", "Raspberry", "Strawberry", "Tangerine"
+    "Pomegranate", "Quince", "Raspberry", "Strawberry", "Tangerine",
+    "Artichoke", "Arugula", "Asparagus", "Beet", "Bok Choy",
+    "Broccoli", "Brussels Sprouts", "Cabbage", "Cauliflower",
+    "Celery", "Chard", "Collard Greens", "Corn", "Cucumber",
+    "Eggplant", "Endive", "Escarole", "Fennel", "Garlic",
+    "Ginger", "Horseradish", "Kale", "Leek", "Lettuce",
+    "Mushroom", "Okra", "Onion", "Parsnip", "Pea",
+    "Pumpkin", "Radish", "Rapini", "Rhutabaga", "Spinach",
+    "Swiss Chard", "Turnip", "Watercress", "Zucchini"
 ]
 
 mutex = Lock()
 recv_network_requests = 0
 sent_network_requests = 0
+err_network_requests = 0
+avg_time_network_requests = 0.0
+time_network_list_requests : list[float] = []
+time_network_times_dic : dict[str,float] = {}
+withDaemon = True
 
 class DiagnosticStats(Enum):
     RECV_REQ = 0
     SENT_REQ = 1
-    AVG_TIME_REQ_RECV = 2
+    ERR_REQ = 2
+    TIME_LIST_REQ = 3
+    AVG_TIME_REQ_RECV = 4
 
 class RoutingProtocols(Enum):
     ISOLATION = 0
@@ -55,7 +70,6 @@ class bcolors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
-
 
 class Node:
     iden : str
@@ -79,25 +93,28 @@ class Node:
     routing : RoutingProtocols
 
     scanIntervalSec : int
-    stackPrevMessages : List[str]
-    stackLimit : int
 
+    redundencyPackets : bool
 
     def __init__(self, serverIp,
-                 serverPort, 
-                 RoutingProtocol = RoutingProtocols.NONE, 
+                 serverPort,
+                 RoutingProtocol = RoutingProtocols.NONE,
                  portStrength = 3,
-                 enableDiagnostics = True, 
-                 hopLimit = 3, 
-                 persistNetworkDiscovery=True, 
-                 scanIntervalSec = 20, 
-                 stackLimit=10):
+                 enableDiagnostics = True,
+                 hopLimit = 3,
+                 persistNetworkDiscovery = True,
+                 scanIntervalSec = 20,
+                 redundencyPackets = True
+                 ):
 
-        random_fruit = random.choice(fruits)
+        if not len(fruitsvegs) == 0:
+            random_fruit = random.choice(fruitsvegs)
+            # prevents duplicates of fruit
+            fruitsvegs.remove(random_fruit)
+        else:
+            random_fruit = "".join([chr(random.randint(65, 90)) for _ in range(4)])
         self.iden = random_fruit + "_" + "".join([chr(random.randint(65, 90)) for _ in range(8)]) # Create unique ID for node
 
-        # prevents duplicates of fruit
-        fruits.remove(random_fruit)
 
         self.serverIp = serverIp
         self.serverPort = serverPort
@@ -106,10 +123,9 @@ class Node:
         self.routing = RoutingProtocol
         self.hopLimit = hopLimit
         self.persistNetworkDiscovery = persistNetworkDiscovery
+        self.redundencyPackets = redundencyPackets
         if self.persistNetworkDiscovery:
             self.scanIntervalSec = scanIntervalSec
-        self.stackPrevMessages = []
-        self.stackLimit = stackLimit
 
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
         if (self.connections is None):
@@ -119,7 +135,6 @@ class Node:
             self.stopServerThread = False
 
         self.runServerThread(serverIp, serverPort)
-
 
     def runServerThread(self, ip : str, port : int):
         """
@@ -133,23 +148,21 @@ class Node:
             print("Server already running, please run stopUDPServer() before making new connection")
             exit(1)
         else:
-            serverThread = Thread(group=None, target=self.startUDPServer, args=(ip, port), daemon=True)
+            serverThread = Thread(group=None, target=self.startUDPServer, args=(ip, port), daemon=withDaemon)
             self.serverThread = serverThread
             self.serverThread.start()
 
-    def reconNetwork(self, sockTimeout : int = 1, destIp = '', runAsThread=True, isRunningAsThread=False): #, delayBeforeStart=0):
+    def reconNetwork(self, sockTimeout : int = 1, destIp = '', runAsThread=True, isRunningAsThread=False):
         """
             Will recon for other nodes in the vicinity for its self.portStrength self.connection
-            this will mean that self.portStrength of 10, will search for every port from -10 to +10
+            this will mean that self.portStrength of 10, will search for every port from -10 to +10 (except itself)
             every port from the port strength will have its own thread, to speed up the network discovery.
             POSTCONDITION: will populate the self.connections with the Nodes in the vincinity.
             @param
                 sockTimeout : int   -   The amount of time it should take for each port to timeout
         """
-
         while True:
-            if not self.persistNetworkDiscovery:
-                return
+
 
             # here because if the netowrking should persist, then we want to spawn a thread of this function
             # with a wait time, this will enable this function running continuasly, in fixed intervals
@@ -171,17 +184,17 @@ class Node:
             for t in reconThreads:
                 t.start()
 
-            for t in reconThreads:
-                t.join()
 
-
-            if runAsThread and not isRunningAsThread:
-                initTh = Thread(group=None, target=self.reconNetwork, kwargs={'isRunningAsThread' : True}, daemon=True)
+            if runAsThread and not isRunningAsThread and self.persistNetworkDiscovery:
+                initTh = Thread(group=None, target=self.reconNetwork, kwargs={'isRunningAsThread' : True}, daemon=withDaemon)
                 self.networkDiscoveryThread = initTh
                 self.networkDiscoveryThread.start()
                 return
 
-            time.sleep(self.scanIntervalSec)
+            if self.persistNetworkDiscovery:
+                time.sleep(self.scanIntervalSec)
+            else:
+                break
 
     def tryPing(self, destIp, destPort, sock):
         """
@@ -190,30 +203,41 @@ class Node:
             @param
                 destIp : str    - The destination Ip to ping
                 destPort  : str - The destination port  to ping
-                sock  : sock    - The given socket to send the message over
+                sock  : socket  - The given socket to send the message over
         """
         print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {destPort} for nodes")}')
-        sock.sendto(b'ping', (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
+        #self.connections = []
+        sock.sendto(b'ping', (destIp, destPort))
+        self.increaseNetworkStats([DiagnosticStats.SENT_REQ, DiagnosticStats.TIME_LIST_REQ], diagnostic=True)
 
         server = None
         try:
-            recData, server = sock.recvfrom(1024) ; self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
+            recData, server = sock.recvfrom(1024)
+            self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
+
             if (recData == b'pong'):
                 with mutex:
                     print(self.diagnositcPrepend("reconNetwork() Node found!", f"server : {server} added!"))
                     if server not in self.connections:
                         self.connections.append(server)
+
         except socket.timeout:
             pass
-
-            if server and server in self.connections:
-                self.connections.remove(server)
+        except ConnectionRefusedError:
+            print(f'{self.diagnositcPrepend("tryPing() [EXCEPTION]", "CONNECTION REFUSED")}')
+            self.increaseNetworkStats([DiagnosticStats.ERR_REQ], diagnostic=True)
+        except RuntimeError:
+            print(f'{self.diagnositcPrepend("tryPing() [EXCEPTION]", "CANNOT START NEW THREAD")}')
+            self.increaseNetworkStats([DiagnosticStats.ERR_REQ], diagnostic=True)
+        #except:
+        #    print(f'{self.diagnositcPrepend("tryPing() [EXCEPTION]", "COULD NOT PROCESS REQUEST")}')
+        #    self.increaseNetworkStats([DiagnosticStats.ERR_REQ], diagnostic=True)
 
     def nodeStatus(self):
         """
             prints the information about this node.
         """
-        print(f'{self.diagnositcPrepend("NodeStatus()",f"Identification : {self.iden}\naddress : '{self.serverIp}':{self.serverPort}\nconnections : {self.connections}\nposition {self.position}, portStrength {self.portStrength}")}')
+        print(f'{self.diagnositcPrepend("NodeStatus()",f"Identification : {self.iden}\naddress : '{self.serverIp}':{self.serverPort}\nconnections : {self.connections}\nportStrength : {self.portStrength}")}')
 
     def sendData(self, data : bytes, destIp : str, destPort : int, requireACK=False, timeout=1.0):
         """
@@ -231,6 +255,8 @@ class Node:
             strData = data.decode("utf-8")
             _, rest_message = self.extractCommand(data)
 
+            strData = strData.replace("ROUTE", f"ROUTE {self.hopLimit} ('{destIp}',{destPort})")
+            data = strData.encode("utf-8")
             match self.routing:
                 case RoutingProtocols.ISOLATION:
                     print(RoutingProtocols.ISOLATION)
@@ -239,8 +265,7 @@ class Node:
                 case RoutingProtocols.DISTRIBUTED:
                     print(RoutingProtocols.DISTRIBUTED)
                 case RoutingProtocols.FLOODING:
-                    strData = strData.replace("ROUTE", f"ROUTE {self.hopLimit} ('{destIp}',{destPort})")
-                    data = strData.encode("utf-8")
+                    print(RoutingProtocols.FLOODING)
                 case RoutingProtocols.RANDOM_WALK:
                     print(RoutingProtocols.RANDOM_WALK)
                 case RoutingProtocols.NONE:
@@ -255,7 +280,7 @@ class Node:
             client_socket.settimeout(timeout)
 
         start = time.time()
-        client_socket.sendto(data, (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
+        client_socket.sendto(data, (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ, DiagnosticStats.TIME_LIST_REQ], diagnostic=True, time=time.time())
         print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
               "Message sent!..")}:{self.bytesToStr(data)}')
 
@@ -314,7 +339,7 @@ class Node:
                 sock : socket   -   the socket which the server listens to (is bound to this node's address)
                 buffer : int    -   The buffer that the receiving message can hold
         """
-        sock.settimeout(0.5)
+        sock.settimeout(1)
         while True:
             try:
                 if self.stopServerThread:
@@ -329,15 +354,14 @@ class Node:
                 pass
 
     def stopUDPServer(self, waitForJoin=True):
-        #TODO Try catch to gracefully stop the server 
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Stopping server...")
         self.stopServerThread = True
         self.persistNetworkDiscovery = False
 
-        if waitForJoin:
+        if waitForJoin and self.serverThread:
             self.serverThread.join()
 
-        if waitForJoin:
+        if waitForJoin and self.networkDiscoveryThread:
             self.networkDiscoveryThread.join()
 
         self.serverThread = None
@@ -391,9 +415,10 @@ class Node:
                     else:
                         self.processRouteRequest(sock, message, sender)
             case 'ERR':
+                self.increaseNetworkStats([DiagnosticStats.ERR_REQ], diagnostic=True)
                 print(f'{self.diagnositcPrepend("processRequest() [ERR]", f"COULD NOT PROCESS REQUEST {self.bytesToStr(message)} because {errMsg}")}')
             case _:
-                print("___")
+                pass
 
 
     def extractCommand(self, message : bytes) -> Tuple[str, bytes]:
@@ -460,8 +485,12 @@ class Node:
             case RoutingProtocols.ISOLATION:
                 print(RoutingProtocols.ISOLATION)
             case RoutingProtocols.CENTRALIZED:
+                # Find central node
+                # Send the request to the node
                 print(RoutingProtocols.CENTRALIZED)
             case RoutingProtocols.DISTRIBUTED:
+                # Make a calculation of the whole self.graph network
+                #based on the self.graph and MST then make a decision on where to go
                 print(RoutingProtocols.DISTRIBUTED)
             case RoutingProtocols.FLOODING:
                 print(RoutingProtocols.FLOODING)
@@ -479,14 +508,12 @@ class Node:
             case _:
                 print(RoutingProtocols.NONE)
 
-
-
     def strToBytes(self, s : str) -> bytes:
         return s.encode("utf-8")
     def bytesToStr(self, b : bytes) -> str:
         return b.decode("utf-8")
 
-    def increaseNetworkStats(self, stats : List[DiagnosticStats], diagnostic=False):
+    def increaseNetworkStats(self, stats : List[DiagnosticStats], diagnostic=False, time=0.0, h=''):
         """
             Increase global counter of network information by a list of Network diagnostic stats.
             @param
@@ -495,7 +522,9 @@ class Node:
         """
         global recv_network_requests
         global sent_network_requests
-       #global ...
+        global err_network_requests
+        global time_network_list_requests
+        global time_network_times_dic
         with mutex:
             for stat in stats:
                 match stat:
@@ -503,42 +532,78 @@ class Node:
                         recv_network_requests += 1
                     case DiagnosticStats.SENT_REQ:
                         sent_network_requests += 1
+                    case DiagnosticStats.ERR_REQ:
+                        err_network_requests += 1
+                    case DiagnosticStats.TIME_LIST_REQ:
+                        #try:
+                        pass
+                        #    read = time_network_times_dic[h]
+                        #    print(f"time {time}, read {read}")
+                        #    time_network_list_requests.append(  time - read )
+                        #except KeyError:
+                        #    time_network_times_dic[h] = time
                     case DiagnosticStats.AVG_TIME_REQ_RECV:
                         pass
                     case _:
                         print("Unknown network stat! (don't) PANIC")
-                        exit(1)
 
-        if diagnostic:
-            self.printNetworkStats()
+            #if diagnostic:
+            #    self.printNetworkStats()
 
 
     def printNetworkStats(self):
-       #global ...
+        global recv_network_requests
+        global sent_network_requests
+        global err_network_requests
+        global avg_time_network_requests
+        global time_network_list_requests
+        with mutex:
+            print(f'''{self.diagnositcPrepend("printNetworkStats()", "")}
+            {DiagnosticStats.RECV_REQ.name} : {recv_network_requests}
+            {DiagnosticStats.SENT_REQ.name} : {sent_network_requests}
+            {DiagnosticStats.ERR_REQ.name} : {err_network_requests}
+            {DiagnosticStats.AVG_TIME_REQ_RECV.name} : {avg_time_network_requests}
+            {DiagnosticStats.TIME_LIST_REQ.name} : (len) {len(time_network_list_requests)}
+            Threads under measurement : TBA dictionary
+                   ''')
 
-        print(f'''{self.diagnositcPrepend("printNetworkStats()", "")}
-        {DiagnosticStats.RECV_REQ.name} : {recv_network_requests}
-        {DiagnosticStats.SENT_REQ.name} : {sent_network_requests}
-        {DiagnosticStats.AVG_TIME_REQ_RECV.name} : [interval]
-        [next diag]
-               ''')
+    def returnNetworkStats(self):
+        global recv_network_requests
+        global sent_network_requests
+        global err_network_requests
+        global avg_time_network_requests
+        global time_network_list_requests
+
+        ret_pack = recv_network_requests, sent_network_requests, err_network_requests, avg_time_network_requests, time_network_list_requests
+
+        recv_network_requests = 0
+        sent_network_requests = 0
+        err_network_requests = 0
+        avg_time_network_requests = 0
+        time_network_list_requests = []
+
+        return ret_pack
 
 if __name__ == '__main__':
     n = Node("", 65000, RoutingProtocols.FLOODING)
-    m = Node("", 65001, RoutingProtocols.FLOODING)
+    m = Node("", 65003, RoutingProtocols.FLOODING)
+    s = Node("", 65006, RoutingProtocols.FLOODING)
     network = []
     network.append(n)
     network.append(m)
+    network.append(s)
 
     for node in network:
         node.reconNetwork()
 
-    time.sleep(1)
+    for node in network:
+        node.nodeStatus()
+
     #n.sendData(b'ROUTE MSG Hello world', '', 65001)
 
-    #print(f" Request count : {n.printNetworkStats()}")
+    a, b, c, d, e, = n.returnNetworkStats()
+    print(a,b,c,d,e)
+
 else:
     print("Node library imported!")
     pass
-
-
