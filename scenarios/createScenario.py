@@ -26,7 +26,7 @@ for node in range(0, int(sys.argv[1])):
 
     picked.append(random_num)
     network.append(
-        Node("", random_num, RoutingProtocols.FLOODING, portStrength=random.randint(int(sys.argv[4]) ,int(sys.argv[5])), hopLimit=sys.argv[6], persistNetworkDiscovery=int(sys.argv[8]))
+        Node("", random_num, RoutingProtocols.RANDOM_WALK, portStrength=random.randint(int(sys.argv[4]) ,int(sys.argv[5])), hopLimit=sys.argv[6], persistNetworkDiscovery=int(sys.argv[8]))
     )
 for node in network:
     node.reconNetwork()

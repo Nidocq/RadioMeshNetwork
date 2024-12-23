@@ -13,7 +13,7 @@ import socket
 import random
 import time
 import datetime
-from threading import Thread, Lock
+from threading import Thread, Lock, active_count
 import re
 from typing import List, Tuple#, Self
 
@@ -40,6 +40,8 @@ mutex = Lock()
 recv_network_requests = 0
 sent_network_requests = 0
 err_network_requests = 0
+route_recv_network_requests = 0
+hops_reached_network_requests = 0
 avg_time_network_requests = 0.0
 time_network_list_requests : list[float] = []
 time_network_times_dic : dict[str,float] = {}
@@ -51,6 +53,8 @@ class DiagnosticStats(Enum):
     ERR_REQ = 2
     TIME_LIST_REQ = 3
     AVG_TIME_REQ_RECV = 4
+    ROUTE_RECV = 5
+    HOPS_REACHED = 6
 
 class RoutingProtocols(Enum):
     ISOLATION = 0
@@ -128,6 +132,7 @@ class Node:
             self.scanIntervalSec = scanIntervalSec
 
         # https://stackoverflow.com/questions/1132941/least-astonishment-and-the-mutable-default-argument
+        # Contains connections in the form of tuples e.g. ('127.0.0.1', 60123) as a tuple<(str, int)>
         if (self.connections is None):
             self.connections = []
 
@@ -182,7 +187,11 @@ class Node:
 
 
             for t in reconThreads:
-                t.start()
+                # Limit the amount of threads before starting new ones to prevent too many threads
+                if int(active_count()) > 3500:
+                    time.sleep(0.05)
+                else:
+                    t.start()
 
 
             if runAsThread and not isRunningAsThread and self.persistNetworkDiscovery:
@@ -257,45 +266,43 @@ class Node:
 
             strData = strData.replace("ROUTE", f"ROUTE {self.hopLimit} ('{destIp}',{destPort})")
             data = strData.encode("utf-8")
-            match self.routing:
-                case RoutingProtocols.ISOLATION:
-                    print(RoutingProtocols.ISOLATION)
-                case RoutingProtocols.CENTRALIZED:
-                    print(RoutingProtocols.CENTRALIZED)
-                case RoutingProtocols.DISTRIBUTED:
-                    print(RoutingProtocols.DISTRIBUTED)
-                case RoutingProtocols.FLOODING:
-                    print(RoutingProtocols.FLOODING)
-                case RoutingProtocols.RANDOM_WALK:
-                    print(RoutingProtocols.RANDOM_WALK)
-                case RoutingProtocols.NONE:
-                    print(RoutingProtocols.NONE)
-                case _:
-                    print(RoutingProtocols.NONE)
+            #match self.routing:
+            #    case RoutingProtocols.ISOLATION:
+            #        print(RoutingProtocols.ISOLATION)
+            #    case RoutingProtocols.CENTRALIZED:
+            #        print(RoutingProtocols.CENTRALIZED)
+            #    case RoutingProtocols.DISTRIBUTED:
+            #        print(RoutingProtocols.DISTRIBUTED)
+            #    case RoutingProtocols.FLOODING:
+            #        print(RoutingProtocols.FLOODING)
+            #    case RoutingProtocols.RANDOM_WALK:
+            #        print(RoutingProtocols.RANDOM_WALK)
+            #    case RoutingProtocols.NONE:
+            #        print(RoutingProtocols.NONE)
+            #    case _:
+            #        print(RoutingProtocols.NONE)
 
             # ----------------------------------
             self.processRouteRequest(client_socket, data, (self.serverIp, self.serverPort))
+        else:
+            client_socket.sendto(data, (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ, DiagnosticStats.TIME_LIST_REQ], diagnostic=True, time=time.time())
+            print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
+                  "Message sent!..")}:{self.bytesToStr(data)}')
 
-        if requireACK:
-            client_socket.settimeout(timeout)
-
-        start = time.time()
-        client_socket.sendto(data, (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ, DiagnosticStats.TIME_LIST_REQ], diagnostic=True, time=time.time())
-        print(f'{self.diagnositcPrepend("sendData(data, (destIp, destpPrt)))",
-              "Message sent!..")}:{self.bytesToStr(data)}')
-
-        if requireACK:
-            try:
-                recData, server = client_socket.recvfrom(1024)
-                self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
-                end = time.time()
-                elapsed = end - start
-                print(f'{self.diagnositcPrepend("sendData()",
-                      f"received ACK from {server}")}:{self.bytesToStr(recData)} {elapsed}')
-                if recData == b'ACK':
-                    print("ACK Acknowlegded")
-            except socket.timeout:
-                print('REQUEST TIMED OUT')
+            start = time.time()
+            if requireACK:
+                client_socket.settimeout(timeout)
+                try:
+                    recData, server = client_socket.recvfrom(1024)
+                    self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
+                    end = time.time()
+                    elapsed = end - start
+                    print(f'{self.diagnositcPrepend("sendData()",
+                          f"received ACK from {server}")}:{self.bytesToStr(recData)} {elapsed}')
+                    if recData == b'ACK':
+                        print("ACK Acknowlegded")
+                except socket.timeout:
+                    print('REQUEST TIMED OUT')
 
 
     def diagnositcPrepend(self, caller : str, customMessage : str):
@@ -339,16 +346,14 @@ class Node:
                 sock : socket   -   the socket which the server listens to (is bound to this node's address)
                 buffer : int    -   The buffer that the receiving message can hold
         """
-        sock.settimeout(1)
+        sock.settimeout(0.2)
         while True:
             try:
                 if self.stopServerThread:
-                    print(f'{self.diagnositcPrepend("listenForRequests()", "Server received stop flag ...")}')
+                    print(f'{self.diagnositcPrepend("listenForRequests()", "Server stopped from flag...")}')
                     break
-                message, sender = sock.recvfrom(buffer)
+                message, sender = sock.recvfrom(buffer) ; self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
                 print(f'{self.diagnositcPrepend("listenForRequests()", f"SERVER RECEIVED MESSAGE from {sender}")} : {self.bytesToStr(message)}')
-
-                self.increaseNetworkStats([DiagnosticStats.RECV_REQ], diagnostic=True)
                 self.processRequest(sock, message, sender)
             except socket.timeout:
                 pass
@@ -389,6 +394,9 @@ class Node:
                 print(f'{self.diagnositcPrepend("processRequest() [ACK]", f"processing request {self.bytesToStr(message)}, responding back with ACK...")}')
                 sock.sendto(b'ACK', sender)
                 self.processRequest(sock, rest_message, sender)
+            case 'ERR':
+                self.increaseNetworkStats([DiagnosticStats.ERR_REQ], diagnostic=True)
+                print(f'{self.diagnositcPrepend("processRequest() [ERR]", f"COULD NOT PROCESS REQUEST {self.bytesToStr(message)} because {errMsg}")}')
             case 'ROUTE':
                 hops, rest_message = self.extractCommand(rest_message)
                 adr, rest_message = self.extractCommand(rest_message)
@@ -406,17 +414,16 @@ class Node:
                     requestedReceiver = tuple(adr.split(","))
                     requestedIp = requestedReceiver[0].replace('(', '').replace("'", '')
                     requestedPort = requestedReceiver[1].replace(')', '')
-                    # If the receiver match, do not do anymore routing
+
                     print(f'serverIp {self.serverIp} serverPort {self.serverPort}, reqRe {requestedIp} and {requestedPort}')
+                    # If the receiver match, do not do anymore routing
                     if str(self.serverIp) == str(requestedIp) and str(self.serverPort) == str(requestedPort):
                         # stop and process the request
-                        print(f'{self.diagnositcPrepend("processRouteRequest()", "MESSAGE RECEIVED TO RIGHTFUL OWNER")} : req for {sender} with message {self.bytesToStr(message)}')
+                        print(f'{self.diagnositcPrepend("processRequest()", "MESSAGE RECEIVED TO RIGHTFUL OWNER")} : req for {sender} with message {self.bytesToStr(message)}')
+                        self.increaseNetworkStats([DiagnosticStats.ROUTE_RECV], diagnostic=True)
                         self.processRequest(sock, rest_message, sender)
                     else:
                         self.processRouteRequest(sock, message, sender)
-            case 'ERR':
-                self.increaseNetworkStats([DiagnosticStats.ERR_REQ], diagnostic=True)
-                print(f'{self.diagnositcPrepend("processRequest() [ERR]", f"COULD NOT PROCESS REQUEST {self.bytesToStr(message)} because {errMsg}")}')
             case _:
                 pass
 
@@ -463,7 +470,6 @@ class Node:
         cmd, rest_message = self.extractCommand(message)
         hops, rest_message = self.extractCommand(rest_message)
         adr, rest_message = self.extractCommand(rest_message)
-        print(f"hops : {hops}")
         print(f'{self.diagnositcPrepend("processRouteRequest()", f"Parsing request as {self.routing.name} of message {self.bytesToStr(message)}")} : from {sender}, \n cmd : {cmd} \n hops : {hops} \n adr : {adr}')
         # Look for the number of hops
         if not cmd == "ROUTE":
@@ -471,12 +477,14 @@ class Node:
             err = "ROUTE request could not be processed as it does not contain 'ROUTE'"
         elif not int(hops) > 0:
             print(f'{self.diagnositcPrepend("processRouteRequest()", "Hops limit reached!...")} : req for {sender} with message {self.bytesToStr(message)}')
+            self.increaseNetworkStats([DiagnosticStats.HOPS_REACHED], diagnostic=True)
             err = "Hops limit reached"
         if err:
             errMessage = self.prependCommand(message, "ERR")
             self.processRequest(sock, errMessage, sender, err)
             return
 
+        # After the hop subtract one from the total hopcount
         strHops = int(hops) - 1
         message = self.strToBytes(re.sub(r"^ROUTE [0-9]+", f"ROUTE {strHops}", strMessage))
 
@@ -496,13 +504,23 @@ class Node:
                 print(RoutingProtocols.FLOODING)
                 for con in self.connections:
                     if not con[0] == sender[0] or not con[1] == sender[1]:
-                        sock.sendto(message, (con[0], con[1]))
+                        #self.sendData(message, con[0], con[1]); self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
+                        sock.sendto(message, (con[0], con[1])) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
                     else:
                         pass
             case RoutingProtocols.RANDOM_WALK:
                 print(RoutingProtocols.RANDOM_WALK)
-                random_path = random.randint(0, len(self.connections)-1)
-                sock.sendto(message, random_path)
+                if len(self.connections) != 0:
+                    random_path = random.randint(0, len(self.connections)-1)
+                    sock.sendto(message, (self.connections[random_path])) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
+                else:
+                    print(f'{self.diagnositcPrepend("processRouteRequest()", "self.connections contains no path to Random walk")}')
+                    #errMessage = self.prependCommand(message, "ERR")
+                    #errMessage = self.processRequest(sock, errMessage, sender, "self.connections contains no path to Random walk")
+
+                # If sendData is used here instead of sendto, an infinite recursion will happen
+                #                                                   v serverIp                        v serverPort
+                #self.sendData(message, self.connections[random_path][0], self.connections[random_path][1]) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
             case RoutingProtocols.NONE:
                 print(RoutingProtocols.NONE)
             case _:
@@ -525,6 +543,8 @@ class Node:
         global err_network_requests
         global time_network_list_requests
         global time_network_times_dic
+        global route_recv_network_requests
+        global hops_reached_network_requests
         with mutex:
             for stat in stats:
                 match stat:
@@ -534,6 +554,10 @@ class Node:
                         sent_network_requests += 1
                     case DiagnosticStats.ERR_REQ:
                         err_network_requests += 1
+                    case DiagnosticStats.ROUTE_RECV:
+                        route_recv_network_requests += 1
+                    case DiagnosticStats.HOPS_REACHED:
+                        hops_reached_network_requests += 1
                     case DiagnosticStats.TIME_LIST_REQ:
                         #try:
                         pass
@@ -555,34 +579,55 @@ class Node:
         global recv_network_requests
         global sent_network_requests
         global err_network_requests
+        global hops_reached_network_requests
         global avg_time_network_requests
         global time_network_list_requests
+        global route_recv_network_requests
         with mutex:
             print(f'''{self.diagnositcPrepend("printNetworkStats()", "")}
             {DiagnosticStats.RECV_REQ.name} : {recv_network_requests}
             {DiagnosticStats.SENT_REQ.name} : {sent_network_requests}
             {DiagnosticStats.ERR_REQ.name} : {err_network_requests}
             {DiagnosticStats.AVG_TIME_REQ_RECV.name} : {avg_time_network_requests}
+            {DiagnosticStats.ROUTE_RECV.name} : {route_recv_network_requests}
+            {DiagnosticStats.HOPS_REACHED.name} : {hops_reached_network_requests}
             {DiagnosticStats.TIME_LIST_REQ.name} : (len) {len(time_network_list_requests)}
-            Threads under measurement : TBA dictionary
+            Threads count : {active_count()}
                    ''')
 
-    def returnNetworkStats(self):
+    def PopNetworkStats(self):
+        """
+            POSTCONDITION will return the current network status and delete the existing network data
+            returns
+                recv_network_requests,
+                sent_network_requests,
+                err_network_requests,
+                avg_time_network_requests,
+                time_network_list_requests,
+                hops_reached_network_requests,
+                route_recv_network_requests
+
+        """
         global recv_network_requests
+        global route_recv_network_requests
         global sent_network_requests
+        global hops_reached_network_requests
         global err_network_requests
         global avg_time_network_requests
         global time_network_list_requests
 
-        ret_pack = recv_network_requests, sent_network_requests, err_network_requests, avg_time_network_requests, time_network_list_requests
+        ret_pack = recv_network_requests, sent_network_requests, err_network_requests, avg_time_network_requests, time_network_list_requests, hops_reached_network_requests, route_recv_network_requests
 
         recv_network_requests = 0
         sent_network_requests = 0
         err_network_requests = 0
         avg_time_network_requests = 0
         time_network_list_requests = []
+        route_recv_network_requests = 0
+        hops_reached_network_requests = 0
 
         return ret_pack
+
 
 if __name__ == '__main__':
     n = Node("", 65000, RoutingProtocols.FLOODING)
@@ -601,7 +646,7 @@ if __name__ == '__main__':
 
     #n.sendData(b'ROUTE MSG Hello world', '', 65001)
 
-    a, b, c, d, e, = n.returnNetworkStats()
+    a, b, c, d, e, = n.PopNetworkStats()
     print(a,b,c,d,e)
 
 else:

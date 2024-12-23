@@ -21,14 +21,15 @@ ran = 3
 tim = 0
 res = False
 for i in range(start, start+(n*ran), ran):
-    network.append(Node("", i, RoutingProtocols.FLOODING, persistNetworkDiscovery=True, scanIntervalSec=scanInterval, portStrength=3))
+    network.append(Node("", i, RoutingProtocols.FLOODING, persistNetworkDiscovery=False, scanIntervalSec=scanInterval, portStrength=3))
 
+time.sleep(1)
 timenow = time.time()
 for node in network:
     node.reconNetwork()
 
 timediff = time.time() - timenow
-time.sleep(0.2)
+time.sleep(4)
 res = False
 
 
@@ -40,13 +41,13 @@ for i in range(1, len(network)-1):
         break
 end = len(network[-1].connections) == 1
 res = st & mid & end
-a, b, c, d, e = network[0].returnNetworkStats()
-with open("stringStatsFINAL.txt", "a") as f:
-    print(f"{n}, {tim}, {res}, {timediff}, {a}, {b}, {c}, {d}, {e}", file=f)
-    print(f"{n}, {tim}, {res}, {timediff}, {a}, {b}, {c}, {d}, {e}")
+a, b, c, d, e, ff, g = network[0].PopNetworkStats()
+with open("stringStatsTest.txt", "a") as f:
+    print(f"{n}, {tim}, {res}, {timediff}, {a}, {b}, {c}, {d}, {e}, {ff}, {g}", file=f)
+    print(f"{n}, {tim}, {res}, {timediff}, {a}, {b}, {c}, {d}, {e} {ff}, {g}")
 print("Saved!")
 n += 1
-time.sleep(scanInterval)
 
 for node in network:
-    node.stopUDPServer(waitForJoin=False)
+    node.stopUDPServer()
+time.sleep(2)
