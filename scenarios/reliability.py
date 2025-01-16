@@ -5,7 +5,7 @@ import sys
 import os
 import threading
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), './..')))
-from proj import Node, RoutingProtocols
+from meshNetwork import Node, RoutingProtocols
 
 """
 Usage
@@ -33,7 +33,7 @@ for node in range(0, int(sys.argv[1])):
     network.append(
         Node("",
              random_num,
-             RoutingProtocols.FLOODING,
+             RoutingProtocols.RANDOM_WALK,
              portStrength=random.randint(int(sys.argv[4]) ,int(sys.argv[5])),
              hopLimit=sys.argv[6],
              persistNetworkDiscovery=int(sys.argv[8]),
@@ -44,16 +44,20 @@ for node in network:
     node.reconNetwork()
     # node.printNetworkStats()
 
-time.sleep(0.2)
+time.sleep(1)
 for node in network:
     node.nodeStatus()
 time.sleep(0.2)
 network[0].PopNetworkStats()
+networkConnections = []
+for i in network:
+    networkConnections.append(i.connections)
 
+distinctNetwork = all(networkConnections) is False
 for msg in range(len(network)*2):
     randomIntNode = random.randint(0, len(network)-1)
     anotherRandomIntNode = random.randint(0, len(network)-1)
-    while len(network[randomIntNode].connections) == 0:
+    while len(network[randomIntNode].connections) == 0 and not distinctNetwork:
         randomIntNode = random.randint(0, len(network)-1)
 
     network[randomIntNode].sendData(b'ROUTE MSG sending lots of love',
@@ -63,10 +67,10 @@ for msg in range(len(network)*2):
     print("waiting for messages to finish")
 
 
-time.sleep(30)
+time.sleep(10)
 
 a, b, c, d, e, ff, g = network[0].PopNetworkStats()
-with open("reliability_2212_FLOODING.txt", "a") as f:
+with open("reliability_1101_RANDOM_WALK_NodesVar_linear2.txt", "a") as f:
     print(f"{sys.argv[1]}, {int(sys.argv[1])*2}, {sys.argv[6]}, {a}, {b}, {c}, {d}, {e}, {ff}, {g}", file=f)
     print(f"{sys.argv[1]}, {int(sys.argv[1])*2}, {sys.argv[6]}, {a}, {b}, {c}, {d}, {e}, {ff}, {g}")
 print("Saved!")

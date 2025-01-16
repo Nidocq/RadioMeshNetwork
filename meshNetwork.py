@@ -1,13 +1,7 @@
 # Node.py developed by Phillip Lundin 13 sep 2024
-# This is a program to simulate how a radio meshnetwork
-# would work in practice. Abstractions have been made to
-# justify the underlying logic on an actual implementation.
+# This is a program to simulate radio mesh networks
+# Abstractions have been made to justify the underlying logic on an actual implementation.
 # You can read more on https://github.com/Nidocq/RadioMeshNetwork/blob/main/README.md
-
-
-# Make the stack that keeps track of redundant information being sent / this needs to be able to be set on and off
-# Add adding/deleting nodes to existing network
-# Finish the algorithms
 
 import socket
 import random
@@ -15,8 +9,7 @@ import time
 import datetime
 from threading import Thread, Lock, active_count
 import re
-from typing import List, Tuple#, Self
-
+from typing import List, Tuple
 from enum import Enum
 
 fruitsvegs = [
@@ -36,6 +29,7 @@ fruitsvegs = [
     "Swiss Chard", "Turnip", "Watercress", "Zucchini"
 ]
 
+# Global variables for measuring network
 mutex = Lock()
 recv_network_requests = 0
 sent_network_requests = 0
@@ -48,6 +42,18 @@ time_network_times_dic : dict[str,float] = {}
 withDaemon = True
 
 class DiagnosticStats(Enum):
+    """
+        When performing network audit, different cases need to be categorized
+        This is the categories which a request can be categorized as.
+        NB this is not mutually exclusive.
+            RECV_REQ - Request received
+            SENT_REQ - Request sent
+            ERR_REQ  - Error in request
+            TIME_LIST_REQ - time request reach destination
+            AVG_TIME_REQ_RECV - Average time for requests reaching destination
+            ROUTE_RECV - Route requests received
+            HOPS_REACHED - Hop reached
+    """
     RECV_REQ = 0
     SENT_REQ = 1
     ERR_REQ = 2
@@ -57,6 +63,9 @@ class DiagnosticStats(Enum):
     HOPS_REACHED = 6
 
 class RoutingProtocols(Enum):
+    """
+        Routing protocols used by all Nodes. Refer to section 3.5 in thesis.
+    """
     ISOLATION = 0
     CENTRALIZED = 1
     DISTRIBUTED = 2
@@ -65,6 +74,9 @@ class RoutingProtocols(Enum):
     NONE  = 5
 
 class bcolors:
+    """
+        Helper class to color output. Used for debugging.
+    """
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
     OKCYAN = '\033[96m'
@@ -76,29 +88,42 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 class Node:
+    """
+        iden            : str                   - Identification of the Node. formatted
+        connection      : List[Tuple[str, int]] - The connection list every node possesses
+            to identify which other Node this Node can see. This is done through the Network
+            discovery covered in section 4.2.1.
+        ServerIp        : str                   - The Node's server IP.
+        serverPort      : str                   - The Node's server Port
+        hopLimit        : int                   - The Node's hop Limit Port. Used to limit
+            the amount of routes a message can travel. refer to section 4.2.2 in thesis
+        portStrength    : int                   - This will indicates the strength of a radio signal if it was
+            just a signal. If this is set to 10, this will search for other nodes that are either in
+            the range -10 ports away or +10 ports away. Default value 3.
+        serverThread    : Thread                - Indicate that we use server threads to communicate with other nodes
+            Set to None for it to be distinct from all the other Nodes
+        networkDiscoveryThread : Thread         - Thread that keep track of the reoccurring network discovery. Refer
+            to chapter 4.3.2 in thesis. This is set to None for it to be distinct from all the other Nodes
+        stopServerThread : bool                 - This signals the Node to stop the server listening for requests
+            This is set to None for it to be distinct from all the other Nodes
+        enableDiagnostics : bool                - Enables diagnostics in the terminal. Default True
+        routing         : RoutingProtocols      - Determines which routing protocol should be used. Refer to the section
+            3.5 in thesis.
+        scanIntervalSec : int                   - Interval time in seconds the Nodes should scan for local netowrk again.
+        persistNetworkDiscovery : bool          - Enables the reoccurring network discovery. Default True,
+    """
     iden : str
-    position : str = "earth"
     connections : List[Tuple[str, int]] = None
     serverIp : str
     serverPort : int
     hopLimit : int
-
-    # this will indicates the strength of a radio signal if it was
-    # just a signal. If this is set to 10, this will search for other
-    # nodes that are either in the range -10 ports away or +10 ports away
     portStrength : int
-
-    # indicate that we use server threads to communicate with other nodes
     serverThread = None
     networkDiscoveryThread = None
     stopServerThread : bool = None
-
     enableDiagnostics : bool
     routing : RoutingProtocols
-
     scanIntervalSec : int
-
-    redundencyPackets : bool
 
     def __init__(self, serverIp,
                  serverPort,
@@ -108,8 +133,7 @@ class Node:
                  hopLimit = 3,
                  persistNetworkDiscovery = True,
                  scanIntervalSec = 20,
-                 redundencyPackets = True
-                 ):
+                ):
 
         if not len(fruitsvegs) == 0:
             random_fruit = random.choice(fruitsvegs)
@@ -119,7 +143,6 @@ class Node:
             random_fruit = "".join([chr(random.randint(65, 90)) for _ in range(4)])
         self.iden = random_fruit + "_" + "".join([chr(random.randint(65, 90)) for _ in range(8)]) # Create unique ID for node
 
-
         self.serverIp = serverIp
         self.serverPort = serverPort
         self.enableDiagnostics = enableDiagnostics
@@ -127,7 +150,6 @@ class Node:
         self.routing = RoutingProtocol
         self.hopLimit = hopLimit
         self.persistNetworkDiscovery = persistNetworkDiscovery
-        self.redundencyPackets = redundencyPackets
         if self.persistNetworkDiscovery:
             self.scanIntervalSec = scanIntervalSec
 
@@ -162,12 +184,17 @@ class Node:
             Will recon for other nodes in the vicinity for its self.portStrength self.connection
             this will mean that self.portStrength of 10, will search for every port from -10 to +10 (except itself)
             every port from the port strength will have its own thread, to speed up the network discovery.
-            POSTCONDITION: will populate the self.connections with the Nodes in the vincinity.
+            POSTCONDITION:
+                - Will populate the self.connections with the Nodes in the vincinity.
+                - Will populate the self.networkDiscoveryThread with the thread for the reoccurring network discovery
+                - Will derive everything what tryPing function does as POSTCONDITION
             @param
                 sockTimeout : int   -   The amount of time it should take for each port to timeout
+                destIp      : str  (optional)  -   Destination IP for the tryPing function
+                runAsThread : bool (optional)  -   If the recon should run as a thread.
+                isRunningAsThread : bool (optional)  - implementation based parameter. If the function is already running
         """
         while True:
-
 
             # here because if the netowrking should persist, then we want to spawn a thread of this function
             # with a wait time, this will enable this function running continuasly, in fixed intervals
@@ -209,13 +236,15 @@ class Node:
         """
             Pings a specific destination ip & port on a specific socket. If a pong response is received
             the messeger will be added to this node's connections
+            POSTCONDITIONS:
+                - Will populate the self.connections with connections this Node can see
             @param
                 destIp : str    - The destination Ip to ping
                 destPort  : str - The destination port  to ping
                 sock  : socket  - The given socket to send the message over
         """
         print(f'{self.diagnositcPrepend("reconNetwork()", f"Searching {destPort} for nodes")}')
-        #self.connections = []
+        self.connections = []
         sock.sendto(b'ping', (destIp, destPort))
         self.increaseNetworkStats([DiagnosticStats.SENT_REQ, DiagnosticStats.TIME_LIST_REQ], diagnostic=True)
 
@@ -266,23 +295,6 @@ class Node:
 
             strData = strData.replace("ROUTE", f"ROUTE {self.hopLimit} ('{destIp}',{destPort})")
             data = strData.encode("utf-8")
-            #match self.routing:
-            #    case RoutingProtocols.ISOLATION:
-            #        print(RoutingProtocols.ISOLATION)
-            #    case RoutingProtocols.CENTRALIZED:
-            #        print(RoutingProtocols.CENTRALIZED)
-            #    case RoutingProtocols.DISTRIBUTED:
-            #        print(RoutingProtocols.DISTRIBUTED)
-            #    case RoutingProtocols.FLOODING:
-            #        print(RoutingProtocols.FLOODING)
-            #    case RoutingProtocols.RANDOM_WALK:
-            #        print(RoutingProtocols.RANDOM_WALK)
-            #    case RoutingProtocols.NONE:
-            #        print(RoutingProtocols.NONE)
-            #    case _:
-            #        print(RoutingProtocols.NONE)
-
-            # ----------------------------------
             self.processRouteRequest(client_socket, data, (self.serverIp, self.serverPort))
         else:
             client_socket.sendto(data, (destIp, destPort)) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ, DiagnosticStats.TIME_LIST_REQ], diagnostic=True, time=time.time())
@@ -319,7 +331,7 @@ class Node:
             return ""
 
 
-    def startUDPServer(self, ip : str, port : int, listenForPing = True):
+    def startUDPServer(self, ip : str, port : int):
         """
             Start a UDP server that listens on the specified ip and port
             POSTCONDITION : Will populate the self.server(ip&port) of the listening ip and port
@@ -338,10 +350,9 @@ class Node:
         self.serverPort = port
         self.listenForRequests(server_socket)
 
-
     def listenForRequests(self, sock, buffer = 1024):
         """
-            listens for incomming traffic forever.
+            listens for incomming traffic until self.stopServerThread is True
             @param
                 sock : socket   -   the socket which the server listens to (is bound to this node's address)
                 buffer : int    -   The buffer that the receiving message can hold
@@ -359,6 +370,15 @@ class Node:
                 pass
 
     def stopUDPServer(self, waitForJoin=True):
+        """
+            Stops the listenForRequests and cleans up the Threads.
+            POSTCONDITION:
+                - self.serverThread & self.networkDiscoveryThread = False
+                - self.stopServerThread =  True
+                - self.persistNetworkDiscovery = False
+            @param
+                waitForJoin : bool      -   Use the .join() function to wait for threads to finish
+        """
         print(f"{self.diagnositcPrepend("StopUDPServer()", "")} Stopping server...")
         self.stopServerThread = True
         self.persistNetworkDiscovery = False
@@ -489,6 +509,7 @@ class Node:
         message = self.strToBytes(re.sub(r"^ROUTE [0-9]+", f"ROUTE {strHops}", strMessage))
 
         print(f'{self.diagnositcPrepend("processRouteRequest()", "processing the routing algorithms...")} : req for {sender} with message {self.bytesToStr(message)}')
+        # NB: If the function sendData is used here instead of sendto, an infinite recursion will happen
         match self.routing:
             case RoutingProtocols.ISOLATION:
                 print(RoutingProtocols.ISOLATION)
@@ -498,13 +519,12 @@ class Node:
                 print(RoutingProtocols.CENTRALIZED)
             case RoutingProtocols.DISTRIBUTED:
                 # Make a calculation of the whole self.graph network
-                #based on the self.graph and MST then make a decision on where to go
+                # based on the self.graph and MST then make a decision on where to go
                 print(RoutingProtocols.DISTRIBUTED)
             case RoutingProtocols.FLOODING:
                 print(RoutingProtocols.FLOODING)
                 for con in self.connections:
                     if not con[0] == sender[0] or not con[1] == sender[1]:
-                        #self.sendData(message, con[0], con[1]); self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
                         sock.sendto(message, (con[0], con[1])) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
                     else:
                         pass
@@ -518,9 +538,6 @@ class Node:
                     #errMessage = self.prependCommand(message, "ERR")
                     #errMessage = self.processRequest(sock, errMessage, sender, "self.connections contains no path to Random walk")
 
-                # If sendData is used here instead of sendto, an infinite recursion will happen
-                #                                                   v serverIp                        v serverPort
-                #self.sendData(message, self.connections[random_path][0], self.connections[random_path][1]) ; self.increaseNetworkStats([DiagnosticStats.SENT_REQ], diagnostic=True)
             case RoutingProtocols.NONE:
                 print(RoutingProtocols.NONE)
             case _:
@@ -531,7 +548,7 @@ class Node:
     def bytesToStr(self, b : bytes) -> str:
         return b.decode("utf-8")
 
-    def increaseNetworkStats(self, stats : List[DiagnosticStats], diagnostic=False, time=0.0, h=''):
+    def increaseNetworkStats(self, stats : List[DiagnosticStats], diagnostic=False):
         """
             Increase global counter of network information by a list of Network diagnostic stats.
             @param
@@ -559,23 +576,17 @@ class Node:
                     case DiagnosticStats.HOPS_REACHED:
                         hops_reached_network_requests += 1
                     case DiagnosticStats.TIME_LIST_REQ:
-                        #try:
                         pass
-                        #    read = time_network_times_dic[h]
-                        #    print(f"time {time}, read {read}")
-                        #    time_network_list_requests.append(  time - read )
-                        #except KeyError:
-                        #    time_network_times_dic[h] = time
                     case DiagnosticStats.AVG_TIME_REQ_RECV:
                         pass
                     case _:
                         print("Unknown network stat! (don't) PANIC")
 
-            #if diagnostic:
-            #    self.printNetworkStats()
-
 
     def printNetworkStats(self):
+        """
+            Will print the Network status
+        """
         global recv_network_requests
         global sent_network_requests
         global err_network_requests
@@ -597,7 +608,8 @@ class Node:
 
     def PopNetworkStats(self):
         """
-            POSTCONDITION will return the current network status and delete the existing network data
+            POSTCONDITION 
+                - will return the current network status and delete the existing network data
             returns
                 recv_network_requests,
                 sent_network_requests,
@@ -630,9 +642,9 @@ class Node:
 
 
 if __name__ == '__main__':
-    n = Node("", 65000, RoutingProtocols.FLOODING)
-    m = Node("", 65003, RoutingProtocols.FLOODING)
-    s = Node("", 65006, RoutingProtocols.FLOODING)
+    n = Node("", 65000, RoutingProtocols.RANDOM_WALK)
+    m = Node("", 65003, RoutingProtocols.RANDOM_WALK)
+    s = Node("", 65006, RoutingProtocols.RANDOM_WALK)
     network = []
     network.append(n)
     network.append(m)
@@ -641,13 +653,14 @@ if __name__ == '__main__':
     for node in network:
         node.reconNetwork()
 
+    time.sleep(2)
     for node in network:
         node.nodeStatus()
 
-    #n.sendData(b'ROUTE MSG Hello world', '', 65001)
-
-    a, b, c, d, e, = n.PopNetworkStats()
-    print(a,b,c,d,e)
+    time.sleep(1)
+    print(n) 
+    print(s.serverPort)
+    n.sendData(b'ROUTE MSG Hello world', '', s.serverPort)
 
 else:
     print("Node library imported!")
